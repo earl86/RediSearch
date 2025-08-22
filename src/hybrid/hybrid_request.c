@@ -6,6 +6,11 @@
 #include "aggregate/aggregate_plan.h"
 #include "aggregate/aggregate.h"
 #include "rmutil/args.h"
+#include "util/workers.h"
+#include "cursor.h"
+#include "info/info_redis/block_client.h"
+#include "query_error.h"
+#include "spec.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,7 +25,7 @@ extern "C" {
  */
 static PLN_LoadStep *createImplicitLoadStep(void) {
     // Use a static array for the field name - no memory management needed
-    static const char *implicitArgv[] = {HYBRID_IMPLICIT_KEY_FIELD};
+    static const char *implicitArgv[] = {HYBRID_IMPLICIT_KEY_FIELD, UNDERSCORE_SCORE};
 
     PLN_LoadStep *implicitLoadStep = rm_calloc(1, sizeof(PLN_LoadStep));
 
@@ -31,7 +36,7 @@ static PLN_LoadStep *createImplicitLoadStep(void) {
     implicitLoadStep->base.dtor = loadDtor; // Use standard destructor
 
     // Create ArgsCursor with static array - no memory management needed
-    ArgsCursor_InitCString(&implicitLoadStep->args, implicitArgv, 1);
+    ArgsCursor_InitCString(&implicitLoadStep->args, implicitArgv, 2);
 
     // Pre-allocate keys array for the number of fields to load
     implicitLoadStep->nkeys = 0;
@@ -84,7 +89,14 @@ int HybridRequest_BuildPipeline(HybridRequest *req, const HybridPipelineParams *
             return rc;
         }
 
+        // Set resultLimit for individual AREQ pipelines using the same logic as sendChunk()
         QueryProcessingCtx *qctx = AREQ_QueryProcessingCtx(areq);
+        size_t limit = UINT64_MAX;  // Default for most cases
+        if (IsHybridVectorSubquery(areq)) {
+            // This is an aggregate request - use maxAggregateResults
+            limit = areq->maxAggregateResults;
+        }
+        qctx->resultLimit = limit;
         RLookup *lookup = AGPLN_GetLookup(&areq->pipeline.ap, NULL, AGPLN_GETLOOKUP_FIRST);
         PLN_LoadStep *subqueryLoadStep = NULL;
 
@@ -119,17 +131,19 @@ int HybridRequest_BuildPipeline(HybridRequest *req, const HybridPipelineParams *
     // Release the sync reference as depleters now hold their own references
     StrongRef_Release(sync_ref);
 
-    //Init lookup since we dont call buildQueryPart
+    // Assumes all upstream lookups are synced (required keys exist in all of them and reference the same row indices),
+    // and contain only keys from the loading step
+    // Init lookup since we dont call buildQueryPart
     RLookup *lookup = AGPLN_GetLookup(&req->tailPipeline->ap, NULL, AGPLN_GETLOOKUP_FIRST);
     RLookup_Init(lookup, IndexSpec_GetSpecCache(params->aggregationParams.common.sctx->spec));
     RLookup *searchLookup = AGPLN_GetLookup(&req->requests[SEARCH_INDEX]->pipeline.ap, NULL, AGPLN_GETLOOKUP_FIRST);
     RLookup_CloneInto(lookup, searchLookup);
+    // TODO: sync SEARCH and VSIM subqueries' lookups after YIELD_DISTANCE_AS is enabled
 
-    const RLookupKey *scoreKey = NULL;
-    if (!loadStep) {
-        // implicit load score as well as key
-        scoreKey = RLookup_GetKey_Write(lookup, UNDERSCORE_SCORE, RLOOKUP_F_NOFLAGS);
-    }
+
+    // scoreKey is not NULL if the score is loaded as a field (explicitly or implicitly)
+    const RLookupKey *scoreKey = RLookup_GetKey_Read(lookup, UNDERSCORE_SCORE, RLOOKUP_F_NOFLAGS);
+
     ResultProcessor *merger = RPHybridMerger_New(params->scoringCtx, depleters, req->nrequests, scoreKey);
     QITR_PushRP(&req->tailPipeline->qctx, merger);
 
@@ -158,29 +172,6 @@ int HybridRequest_BuildPipeline(HybridRequest *req, const HybridPipelineParams *
         AGPLN_AddStep(&req->tailPipeline->ap, &loadStep->base);
     }
     return REDISMODULE_OK;
-}
-
-/**
- * Execute the hybrid search pipeline and send results to the client.
- * This function uses the hybrid-specific result serialization functions.
- *
- * @param req The HybridRequest with built pipeline
- * @param ctx Redis module context for sending the reply
- */
-void HREQ_Execute(HybridRequest *hreq, RedisModuleCtx *ctx,
-                            RedisSearchCtx *sctx, const char *indexname) {
-    // Set the chunk size limit for the query
-    hreq->tailPipeline->qctx.resultLimit = UINT64_MAX;
-
-    AGGPlan *plan = &hreq->tailPipeline->ap;
-    cachedVars cv = {
-        .lastLk = AGPLN_GetLookup(plan, NULL, AGPLN_GETLOOKUP_LAST),
-        .lastAstp = AGPLN_GetArrangeStep(plan)
-    };
-
-    RedisModule_Reply _reply = RedisModule_NewReply(ctx), *reply = &_reply;
-    sendChunk_hybrid(hreq, reply, UINT64_MAX, cv);
-    RedisModule_EndReply(reply);
 }
 
 /**
@@ -274,6 +265,41 @@ void HybridRequest_Free(HybridRequest *req) {
     }
 
     rm_free(req);
+}
+
+/**
+ * Get error information from a HybridRequest.
+ * This function checks for errors in priority order:
+ * 1. Tail pipeline errors (affects final result processing)
+ * 2. Individual AREQ errors (sub-query failures)
+ *
+ * @param hreq The HybridRequest to check for errors
+ * @param status QueryError pointer to store error information on failure
+ * @return REDISMODULE_OK if no errors found, REDISMODULE_ERR if error found
+ */
+int HREQ_GetError(HybridRequest *hreq, QueryError *status) {
+    if (!hreq || !status) {
+        return REDISMODULE_ERR;
+    }
+
+    // Priority 1: Tail pipeline error (affects final result processing)
+    if (hreq->tailPipelineError.code != QUERY_OK) {
+        QueryError_SetError(status, hreq->tailPipelineError.code,
+                           hreq->tailPipelineError.detail);
+        return REDISMODULE_ERR;
+    }
+
+    // Priority 2: Individual AREQ errors (sub-query failures)
+    for (size_t i = 0; i < hreq->nrequests; i++) {
+        if (hreq->errors[i].code != QUERY_OK) {
+            QueryError_SetError(status, hreq->errors[i].code,
+                               hreq->errors[i].detail);
+            return REDISMODULE_ERR;
+        }
+    }
+
+    // No errors found
+    return REDISMODULE_OK;
 }
 
 #ifdef __cplusplus
