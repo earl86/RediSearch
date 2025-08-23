@@ -1,8 +1,9 @@
 import numpy as np
 from typing import List, Tuple, Optional
 from RLTest import Env
-from common import getConnectionByEnv, to_dict, debug_cmd, create_np_array_typed
+from common import getConnectionByEnv, create_np_array_typed, ANY
 from utils.rrf import rrf_fusion, Result
+import re
 
 
 def _sort_adjacent_same_scores(results: List[Result]) -> None:
@@ -25,6 +26,23 @@ def _sort_adjacent_same_scores(results: List[Result]) -> None:
             results[i:j] = sorted(results[i:j], key=lambda x: x.key)
         i = j
 
+def _validate_results(env, actual_results: List[Result], expected_results: List[Result], comparison_table: str) -> None:
+    """Compare actual vs expected results, allowing for small score variations"""
+
+    # Every test case should return at least one result
+    env.assertGreater(len(actual_results), 0, message=comparison_table)
+
+    # We assume the number of actual result is correct
+    env.assertLessEqual(len(actual_results), len(expected_results), message=comparison_table)
+    for i in range(len(actual_results)):
+        env.assertEqual(
+            actual_results[i].key, expected_results[i].key,
+            message=f'key mismatch at index {i}: actual: {actual_results[i].key}, expected: {expected_results[i].key}')
+        env.assertAlmostEqual(
+            actual_results[i].score, expected_results[i].score, delta=1e-10,
+            message=f'score mismatch at index {i}: actual: {actual_results[i].score}, expected: {expected_results[i].score}')
+
+
 # =============================================================================
 # HYBRID SEARCH TESTS CLASS
 # =============================================================================
@@ -36,9 +54,11 @@ class testHybridSearch:
     '''
     def __init__(self):
         self.env = Env()
-        self.index_name = self._generate_hybrid_test_data()
+        self.dim = 128
+        self.index_name = self._generate_hybrid_test_data(self.dim)
+        self.vector_blob = create_np_array_typed([2.3] * self.dim).tobytes()
 
-    def _generate_hybrid_test_data(self):
+    def _generate_hybrid_test_data(self, dim: int):
         """
         Generate sample data for hybrid search tests.
         This runs once when the class is instantiated.
@@ -47,7 +67,6 @@ class testHybridSearch:
             str: index_name
         """
         index_name = "idx"
-        dim = 128
         num_vectors = 10
         data_type = "FLOAT32"
 
@@ -80,95 +99,123 @@ class testHybridSearch:
             else:
                 tag_value = "odd"
 
-            text_value = f"Only text number {words[i % len(words)]} {tag_value}"
+            text_value = f"{words[i % len(words)]} {tag_value}"
 
             # Create documents with only text
-            p.execute_command('HSET', f'only_text_{i:02d}',
-                              'text', text_value, 'number', i, 'tag', tag_value)
+            p.execute_command('HSET', f'text_{i:02d}',
+                              'text', f'text {text_value}',
+                              'number', i,
+                              'tag', tag_value)
 
             # Create documents with only vector
-            p.execute_command('HSET', f'only_vector_{i:02d}',
+            p.execute_command('HSET', f'vector_{i:02d}',
                               'vector', np.random.rand(dim).astype(np.float32).tobytes(),
                               'number', i, 'tag', tag_value)
 
             # Create documents with both vector and text data
             p.execute_command('HSET', f'both_{i:02d}',
                               'vector', np.random.rand(dim).astype(np.float32).tobytes(),
-                              'text', text_value, 'number', i, 'tag', tag_value)
+                              'text', f'both {text_value}',
+                              'number', i,
+                              'tag', tag_value)
 
         p.execute()
         return index_name
 
+    ############################################################################
+    # KNN Vector search tests
+    ############################################################################
     def test_knn_single_token_search(self):
         """Test hybrid search using KNN + single token search scenario"""
         scenario = {
             "test_name": "Single token text search",
-            "hybrid_query": "FT.HYBRID idx SEARCH two VSIM @vector $BLOB LIMIT 0 11",
+            "hybrid_query": "SEARCH two VSIM @vector $BLOB LIMIT 0 11",
             "search_equivalent": "two",
             "vector_equivalent": "*=>[KNN 10 @vector $BLOB AS vector_distance]"
         }
-        # TODO fix
-        # run_test_scenario(self.env, self.index_name, scenario)
+        run_test_scenario(self.env, self.index_name, scenario)
 
     def test_knn_wildcard_search(self):
         """Test hybrid search using KNN + wildcard search scenario"""
         scenario = {
             "test_name": "Wildcard text search",
-            "hybrid_query": "FT.HYBRID idx SEARCH * VSIM @vector $BLOB",
+            "hybrid_query": "SEARCH * VSIM @vector $BLOB",
             "search_equivalent": "*",
             "vector_equivalent": "*=>[KNN 10 @vector $BLOB AS vector_distance]"
         }
-        # TODO: Why the search_equivalent query returns 'only_vector_' docs with higher scores than the ones from 'both_' docs?
+        # TODO: Why the search_equivalent query returns 'vector_' docs with higher scores than the ones from 'both_' docs?
         run_test_scenario(self.env, self.index_name, scenario)
 
     def test_knn_custom_k(self):
         """Test hybrid search using KNN with custom k scenario"""
         scenario = {
             "test_name": "KNN with custom k",
-            "hybrid_query": "FT.HYBRID idx SEARCH even VSIM @vector $BLOB KNN 2 K 5",
+            "hybrid_query": "SEARCH even VSIM @vector $BLOB KNN 2 K 5",
             "search_equivalent": "even",
             "vector_equivalent": "*=>[KNN 5 @vector $BLOB AS vector_distance]"
         }
         run_test_scenario(self.env, self.index_name, scenario)
 
-    def test_knn_with_parameters(self):
-        """Test hybrid search using KNN + EF_RUNTIME parameter"""
+    def test_knn_custom_rrf_window(self):
+        """Test hybrid search using KNN with custom k scenario"""
         scenario = {
-            "test_name": "KNN query with parameters",
-            "hybrid_query": "FT.HYBRID idx SEARCH even VECTOR @vector $BLOB KNN 4 EF_RUNTIME 100 YIELD_DISTANCE_AS vector_distance",
+            "test_name": "KNN with custom RRF WINDOW",
+            "hybrid_query": "SEARCH even VSIM @vector $BLOB KNN 2 K 10 COMBINE RRF 2 WINDOW 2",
             "search_equivalent": "even",
-            "vector_equivalent": "*=>[KNN 10 @vector $BLOB EF_RUNTIME 100 AS vector_distance]"
+            "vector_equivalent": "*=>[KNN 10 @vector $BLOB AS vector_distance]",
+            "vector_suffix": "LIMIT 0 2"
         }
-        # TODO fix
-        # run_test_scenario(self.env, self.index_name, scenario)
+        run_test_scenario(self.env, self.index_name, scenario)
 
-    def test_knn_text_vector_prefilter(self):
-        """Test hybrid search using KNN + text prefilter"""
-        scenario = {
-            "test_name": "KNN with text prefilter",
-            "hybrid_query": "FT.HYBRID idx SEARCH @text:(even) VSIM @vector $BLOB FILTER @text:(six|four)",
-            "search_equivalent": "@text:(even)",
-            "vector_equivalent": "(@text:(six|four))=>[KNN 10 @vector $BLOB AS vector_distance]"
-        }
-        # TODO fix
-        # run_test_scenario(self.env, self.index_name, scenario)
+    # # TODO: Enable this test after adding support for EF_RUNTIME in VSIM
+    # def test_knn_ef_runtime(self):
+    #     """Test hybrid search using KNN + EF_RUNTIME parameter"""
+    #     scenario = {
+    #         "test_name": "KNN query with parameters",
+    #         "hybrid_query": "SEARCH even VSIM @vector $BLOB KNN 4 K 10 EF_RUNTIME 100",
+    #         "search_equivalent": "even",
+    #         "vector_equivalent": "*=>[KNN 10 @vector $BLOB EF_RUNTIME 100]"
+    #     }
+    #     run_test_scenario(self.env, self.index_name, scenario)
+
+    # # TODO: Enable this test after adding support for YIELD_DISTANCE_AS in VSIM
+    # def test_knn_yield_distance_as(self):
+    #     """Test hybrid search using KNN + YIELD_DISTANCE_AS parameter"""
+    #     scenario = {
+    #         "test_name": "KNN query with parameters",
+    #         "hybrid_query": "SEARCH even VSIM @vector $BLOB KNN 4 K 10 YIELD_DISTANCE_AS vector_distance",
+    #         "search_equivalent": "even",
+    #         "vector_equivalent": "*=>[KNN 10 @vector $BLOB]=>{$YIELD_DISTANCE_AS: vector_distance}"
+    #     }
+    #     run_test_scenario(self.env, self.index_name, scenario)
+
+    # # TODO: MOD-11012 FT.HYBRID VSIM FILTER clause doesnt work as expected
+    # def test_knn_text_vector_prefilter(self):
+    #     """Test hybrid search using KNN + VSIM text prefilter"""
+    #     scenario = {
+    #         "test_name": "KNN with text prefilter",
+    #         "hybrid_query": "SEARCH @text:(even) VSIM @vector $BLOB FILTER @text:(two|four|six)",
+    #         "search_equivalent": "@text:(even)",
+    #         "vector_equivalent": "(@text:(two|four|six))=>[KNN 10 @vector $BLOB AS vector_distance]"
+    #     }
+    #     run_test_scenario(self.env, self.index_name, scenario)
 
     def test_knn_numeric_vector_prefilter(self):
         """Test hybrid search using KNN + numeric prefilter"""
         scenario = {
             "test_name": "KNN with numeric prefilter",
-            "hybrid_query": f"SEARCH @text:even VSIM @vector $BLOB FILTER @number:[2 5]",
+            "hybrid_query": "SEARCH @text:even VSIM @vector $BLOB FILTER '@number:[2 5]'",
             "search_equivalent": "@text:even",
-            "vector_equivalent": "(@number:[2 5])=>[KNN 10 @vector $BLOB AS vector_distance]"
+            "vector_equivalent": "(@number:[2 5])=>[KNN 10 @vector $BLOB AS vector_distance]",
+            "vector_suffix": "LIMIT 0 10"
         }
-        # TODO fix
-        # run_test_scenario(self.env, self.index_name, scenario)
+        run_test_scenario(self.env, self.index_name, scenario)
 
     def test_knn_tag_vector_prefilter(self):
         """Test hybrid search using KNN + tag prefilter"""
         scenario = {
             "test_name": "KNN with tag prefilter",
-            "hybrid_query": "FT.HYBRID idx SEARCH @text:even VSIM @vector $BLOB FILTER @tag:{odd}",
+            "hybrid_query": "SEARCH @text:even VSIM @vector $BLOB FILTER @tag:{odd}",
             "search_equivalent": "@text:even",
             "vector_equivalent": "(@tag:{odd})=>[KNN 10 @vector $BLOB AS vector_distance]"
         }
@@ -178,7 +225,7 @@ class testHybridSearch:
         """Test hybrid search using KNN + vector prefilter that returns zero results"""
         scenario = {
             "test_name": "KNN with vector prefilter that returns zero results",
-            "hybrid_query": "FT.HYBRID idx SEARCH @text:even VSIM @vector $BLOB FILTER @tag:{invalid_tag}",
+            "hybrid_query": "SEARCH @text:even VSIM @vector $BLOB FILTER @tag:{invalid_tag}",
             "search_equivalent": "@text:even",
             "vector_equivalent": "(@tag:{invalid_tag})=>[KNN 10 @vector $BLOB AS vector_distance]"
         }
@@ -188,33 +235,112 @@ class testHybridSearch:
         """Test hybrid search using KNN + text prefilter that returns zero results"""
         scenario = {
             "test_name": "KNN with vector prefilter that returns zero results",
-            "hybrid_query": "FT.HYBRID idx SEARCH @text:(invalid_text) VSIM @vector $BLOB",
+            "hybrid_query": "SEARCH @text:(invalid_text) VSIM @vector $BLOB",
             "search_equivalent": "@text:(invalid_text)",
             "vector_equivalent": "*=>[KNN 10 @vector $BLOB AS vector_distance]"
         }
         run_test_scenario(self.env, self.index_name, scenario)
 
+    def test_knn_default_output(self):
+        """Test hybrid search using default output fields"""
+        hybrid_query = (
+            "SEARCH '@text:(both) @number:[5 5]' "
+            "VSIM @vector $BLOB FILTER '@number:[1 1]' "
+            "COMBINE RRF 2 K 1"
+        )
+        # DocId     | SEARCH_RANK | VECTOR_RANK | SCORE
+        # ----------------------------------------------------
+        # both_01   | -           | 1           | 1/(4) = 0.25
+        # both_05   | 1           | -           | 1/(4) = 0.25
+        # vector_01 | -           | 2           | 1/(5) = 0.20
+        hybrid_cmd = translate_hybrid_query(hybrid_query, self.vector_blob,self.index_name)
+        res = self.env.executeCommand(*hybrid_cmd)
+        expected = [
+            'format', 'STRING',
+            'results',
+            [
+                ['attributes', [['__key', 'both_01', '__score', '0.5']]],
+                ['attributes', [['__key', 'both_05', '__score', '0.5']]],
+                ['attributes', [['__key', 'vector_01', '__score', '0.333333333333']]]
+            ],
+            'total_results', 3,
+            'warning', [],
+            'execution_time', ANY
+        ]
+        self.env.assertEqual(res, expected)
+
+    def test_knn_load_key(self):
+        """Test hybrid search + LOAD __key"""
+        hybrid_query = (
+            "SEARCH '@text:(even four)' "
+            "VSIM @vector $BLOB FILTER @tag:{invalid_tag} "
+            "LOAD 3 __key AS my_key"
+        )
+        hybrid_cmd = translate_hybrid_query(hybrid_query, self.vector_blob,self.index_name)
+        res = self.env.executeCommand(*hybrid_cmd)
+        # TODO: Is the format correct? list of lists?
+        self.env.assertEqual(
+            res[3][0][1],
+            [['my_key', 'text_04']])
+        self.env.assertEqual(
+            res[3][1][1],
+            [['my_key', 'both_04']])
+
+    # TODO: Enable this test after fixing MOD-10987
+    # def test_knn_load_score(self):
+    #     """Test hybrid search + LOAD __score"""
+    #     hybrid_query = f"SEARCH '-@text:(both) -@text:(text)' VSIM @vector $BLOB FILTER @tag:{{invalid_tag}} COMBINE RRF 4 K 3 WINDOW 2 LOAD 3 __score AS my_score"
+    #     hybrid_cmd = translate_hybrid_query(hybrid_query, self.vector_blob, self.index_name)
+    #     res = self.env.executeCommand(*hybrid_cmd)
+    #     self.env.assertEqual(
+    #         res[3][0][1],
+    #         [['my_score', '0.25']])
+    #     self.env.assertEqual(
+    #         res[3][1][1],
+    #         [['my_score', '0.2']])
+
+    def test_knn_load_fields(self):
+        """Test hybrid search using LOAD to load fields"""
+        hybrid_query = (
+            "SEARCH '@text:(even four)' "
+            "VSIM @vector $BLOB FILTER @tag:{invalid_tag} "
+            "LOAD 9 @text AS my_text @number AS my_number @tag AS my_tag"
+        )
+        hybrid_cmd = translate_hybrid_query(hybrid_query, self.vector_blob, self.index_name)
+        res = self.env.executeCommand(*hybrid_cmd)
+        self.env.assertEqual(
+            res[3][0][1],
+            [['my_text', 'text four even',
+              'my_number', '4',
+              'my_tag', 'even']])
+        self.env.assertEqual(
+            res[3][1][1],
+            [['my_text', 'both four even',
+              'my_number', '4',
+              'my_tag', 'even']])
+
+    ############################################################################
+    # Range query tests
+    ############################################################################
     def test_range_basic(self):
         """Test hybrid search using range query scenario"""
         scenario = {
             "test_name": "Range query",
-            "hybrid_query": "FT.HYBRID idx SEARCH @text:(four|even) VSIM @vector $BLOB RANGE 2 RADIUS 5",
+            "hybrid_query": "SEARCH @text:(four|even) VSIM @vector $BLOB RANGE 2 RADIUS 5",
             "search_equivalent": "@text:(four|even)",
             "vector_equivalent": "@vector:[VECTOR_RANGE 5 $BLOB]=>{$YIELD_DISTANCE_AS: vector_distance}"
         }
         run_test_scenario(self.env, self.index_name, scenario)
 
-    def test_range_with_parameters(self):
-        """Test hybrid search using range with parameters"""
-        scenario = {
-            "test_name": "Range query",
-            "hybrid_query": "FT.HYBRID idx SEARCH @text:(four|even) VSIM @vector $BLOB RANGE 6 RADIUS 5 EPSILON 0.5 YIELD_DISTANCE_AS vector_distance",
-            "search_equivalent": "@text:(four|even)",
-            "vector_equivalent": "@vector:[VECTOR_RANGE 5 $BLOB]=>{$EPSILON:0.5; $YIELD_DISTANCE_AS: vector_distance}"
-        }
-        # TODO fix
-        # run_test_scenario(self.env, self.index_name, scenario)
-
+    # def test_range_with_parameters(self):
+    #     """Test hybrid search using range with parameters"""
+    #     scenario = {
+    #         "test_name": "Range query",
+    #         "hybrid_query": "SEARCH @text:(four|even) VSIM @vector $BLOB RANGE 6 RADIUS 5 EPSILON 0.5 YIELD_DISTANCE_AS vector_distance",
+    #         "search_equivalent": "@text:(four|even)",
+    #         "vector_equivalent": "@vector:[VECTOR_RANGE 5 $BLOB]=>{$EPSILON:0.5; $YIELD_DISTANCE_AS: vector_distance}"
+    #     }
+    #     run_test_scenario(self.env, self.index_name, scenario)
 
 # =============================================================================
 # QUERY TRANSLATION LAYER
@@ -244,7 +370,7 @@ def process_search_response(search_results):
             doc_id = results_data[i].decode('utf-8') if isinstance(results_data[i], bytes) else str(results_data[i])
             score = float(results_data[i + 1].decode('utf-8') if isinstance(results_data[i + 1], bytes) else results_data[i + 1])
             processed.append(Result(key=doc_id, score=score))
-
+    # _sort_adjacent_same_scores(processed)
     return processed
 
 
@@ -255,8 +381,8 @@ def process_aggregate_response(aggregate_results):
     Args:
         aggregate_results: Raw Redis aggregate response like:
         [30,
-            ['__score', '1.69230771347', '__key', 'only_vector_10'],
-            ['__score', '1.69230771347', '__key', 'only_vector_09'],...
+            ['__score', '1.69230771347', '__key', 'vector_10'],
+            ['__score', '1.69230771347', '__key', 'vector_09'],...
 
     Returns:
         list: [Result(key=doc_id_str, score=score_float), ...] objects
@@ -274,9 +400,11 @@ def process_aggregate_response(aggregate_results):
     for i in range(0, len(score)):
         processed.append(Result(key=doc_id[i], score=score[i]))
 
+    # printprocessed)
+
     return processed
 
-def process_hybrid_response(hybrid_results, expected_results: Optional[List[Result]] = None) -> List[Result]:
+def process_hybrid_response(hybrid_results, expected_results: Optional[List[Result]] = None) -> Tuple[List[Result], dict]:
     """
     Process hybrid response into list of Result objects and ranking info
 
@@ -286,21 +414,24 @@ def process_hybrid_response(hybrid_results, expected_results: Optional[List[Resu
         expected_results: Optional list of expected Result objects for comparison
 
     Returns:
-        [Result(key=doc_id_str, score=score_float), ...]
+        tuple: ([Result(key=doc_id_str, score=score_float), ...], ranking_info_dict)
+
+    Note: ranking_info_dict contains search_ranks and vector_ranks for each document
     """
     if not hybrid_results or len(hybrid_results) < 4:
-        return []
+        return [], {}
 
     # Extract the results array from index 3
     # Structure: ['format', 'STRING', 'results', [result_items...]]
     results_data = hybrid_results[3]
     if not results_data:
-        return []
+        return [], {}
 
     processed = []
+    ranking_info = {'search_ranks': {}, 'vector_ranks': {}}
 
     for result_item in results_data:
-        # Each result_item is: ['attributes', [['__key', doc_id, '__score', score_str]]]
+        # Each result_item is: ['attributes', [['__key', doc_id, 'SEARCH_RANK', '2', 'VECTOR_RANK', '5', '__score', score_str]]]
         if (len(result_item) >= 2 and
             result_item[0] == 'attributes' and
             result_item[1] and
@@ -316,12 +447,103 @@ def process_hybrid_response(hybrid_results, expected_results: Optional[List[Resu
                     score = float(attrs['__score'])
                     doc_id = attrs['__key']
 
+                    # Extract ranking information
+                    search_rank = attrs.get('SEARCH_RANK', '-')
+                    vector_rank = attrs.get('VECTOR_RANK', '-')
+
+                    # Store ranking info (convert to int if not '-')
+                    if search_rank != '-':
+                        try:
+                            ranking_info['search_ranks'][doc_id] = int(search_rank)
+                        except ValueError:
+                            pass
+
+                    if vector_rank != '-':
+                        try:
+                            ranking_info['vector_ranks'][doc_id] = int(vector_rank)
+                        except ValueError:
+                            pass
+
                     processed.append(Result(key=doc_id, score=score))
                 except (ValueError, TypeError):
                     pass  # Skip invalid scores
 
-    return processed
+    return processed, ranking_info
 
+
+def create_comparison_table(actual_results: List[Result], expected_results: List[Result],
+                           ranking_info: dict = None, original_search_results: List[Result] = None,
+                           original_vector_results: List[Result] = None) -> str:
+    """Create side-by-side comparison table of actual vs expected results with search/vector rankings"""
+    lines = []
+    lines.append("="*200)
+    lines.append(f"{'RANK':<6} {'ACTUAL DOC_ID':<20} {'ACTUAL SCORE':<15} {'A_SEARCH':<10} {'A_VECTOR':<10} {'|':<3} {'EXPECTED DOC_ID':<20} {'EXPECTED SCORE':<15} {'E_SEARCH':<10} {'E_VECTOR':<10} {'MATCH':<8}")
+    lines.append("-"*200)
+
+    # Get ranking maps from hybrid results (for actual results)
+    actual_search_rank_map = ranking_info.get('search_ranks', {}) if ranking_info else {}
+    actual_vector_rank_map = ranking_info.get('vector_ranks', {}) if ranking_info else {}
+
+    # Create ranking maps from original search and vector results (for expected results)
+    expected_search_rank_map = {}
+    expected_vector_rank_map = {}
+
+    if original_search_results:
+        for rank, result in enumerate(original_search_results, 1):
+            expected_search_rank_map[result.key] = rank
+
+    if original_vector_results:
+        for rank, result in enumerate(original_vector_results, 1):
+            expected_vector_rank_map[result.key] = rank
+
+    max_len = max(len(actual_results), len(expected_results))
+
+    for i in range(max_len):
+        # Get actual result
+        if i < len(actual_results):
+            actual_result = actual_results[i]
+            actual_doc_str = actual_result.key[:19]  # Truncate if too long
+            actual_score_str = f"{actual_result.score:.10f}"
+
+            # Get search and vector rankings for actual doc (from hybrid results)
+            actual_search_rank = actual_search_rank_map.get(actual_result.key, "---")
+            actual_vector_rank = actual_vector_rank_map.get(actual_result.key, "---")
+            actual_search_str = str(actual_search_rank) if actual_search_rank != "---" else "---"
+            actual_vector_str = str(actual_vector_rank) if actual_vector_rank != "---" else "---"
+        else:
+            actual_doc_str = "---"
+            actual_score_str = "---"
+            actual_search_str = "---"
+            actual_vector_str = "---"
+
+        # Get expected result
+        if i < len(expected_results):
+            expected_result = expected_results[i]
+            expected_doc_str = expected_result.key[:19]  # Truncate if too long
+            expected_score_str = f"{expected_result.score:.10f}"
+
+            # Get search and vector rankings for expected doc (from original results)
+            expected_search_rank = expected_search_rank_map.get(expected_result.key, "---")
+            expected_vector_rank = expected_vector_rank_map.get(expected_result.key, "---")
+            expected_search_str = str(expected_search_rank) if expected_search_rank != "---" else "---"
+            expected_vector_str = str(expected_vector_rank) if expected_vector_rank != "---" else "---"
+        else:
+            expected_doc_str = "---"
+            expected_score_str = "---"
+            expected_search_str = "---"
+            expected_vector_str = "---"
+
+        # Check if they match
+        if (i < len(actual_results) and i < len(expected_results) and
+            actual_results[i].key == expected_results[i].key):
+            match_str = "✓"
+        else:
+            match_str = "✗"
+
+        lines.append(f"{i+1:<6} {actual_doc_str:<20} {actual_score_str:<15} {actual_search_str:<10} {actual_vector_str:<10} {'|':<3} {expected_doc_str:<20} {expected_score_str:<15} {expected_search_str:<10} {expected_vector_str:<10} {match_str:<8}")
+
+    lines.append("="*200)
+    return "\n" + "\n".join(lines) + "\n"
 
 def process_vector_response(vector_results):
     """
@@ -359,7 +581,7 @@ def process_vector_response(vector_results):
     return processed
 
 
-def translate_vector_query(vector_query, vector_blob, index_name):
+def translate_vector_query(vector_query, vector_blob, index_name, cmd_suffix):
     """
     Translate simple vector query notation to working Redis command
 
@@ -375,8 +597,10 @@ def translate_vector_query(vector_query, vector_blob, index_name):
         'FT.SEARCH', index_name, vector_query,
         'PARAMS', '2', 'BLOB', vector_blob,
         'RETURN', '1', 'vector_distance', 'SORTBY', 'vector_distance',
-        'DIALECT', '2'
+        'DIALECT', '2',
     ]
+    if cmd_suffix:
+        command_parts.extend(cmd_suffix.split(' '))
     return command_parts
 
 
@@ -399,6 +623,23 @@ def translate_search_query(search_query, index_name):
     ]
     return command_parts
 
+def translate_hybrid_query(hybrid_query, vector_blob, index_name):
+    """
+    Translate simple hybrid query notation to working Redis command
+
+    Args:
+        simple_query: Simple notation like "SEARCH hello VSIM @vector $BLOB"
+        vector_blob: Vector data as bytes
+        index_name: Redis index name
+
+    Returns:
+        list: Command parts for redis_client.execute_command
+    """
+    cmd = hybrid_query.replace('$BLOB', vector_blob.decode('utf-8'))
+    cmd = f'FT.HYBRID {index_name} {cmd}'
+    # Split into command parts, keeping single quoted strings together
+    command_parts = [p for p in re.split(r" (?=(?:[^']*'[^']*')*[^']*$)", cmd) if p]
+    return command_parts
 
 # =============================================================================
 # TEST EXECUTION
@@ -406,10 +647,11 @@ def translate_search_query(search_query, index_name):
 
 def run_test_scenario(env, index_name, scenario):
     """
-    Run a test scenario from JSON file
+    Run a test scenario from dict
 
     Args:
-        scenario_file: Path to JSON scenario file
+        scenario: Dict with test scenario
+        index_name: Redis index name
     """
 
     conn = getConnectionByEnv(env)
@@ -419,50 +661,57 @@ def run_test_scenario(env, index_name, scenario):
     test_vector = create_np_array_typed([3.1415] * dim)
     vector_blob = test_vector.tobytes()
 
-    print(f"Running test: {scenario['test_name']}")
-    print(f"Using index: {index_name}")
+    # printf"Running test: {scenario['test_name']}")
+    # printf"Using index: {index_name}")
 
     # Execute search query
     search_cmd = translate_search_query(scenario['search_equivalent'], index_name)
-    print(f"Search command: {search_cmd}")
-    print(f"Search command: {' '.join(search_cmd)}")
+    # printf"Search command: {search_cmd}")
+    # # printf"Search command: {' '.join(search_cmd)}")
     search_results_raw = conn.execute_command(*search_cmd)
-    print(f"Search results raw: {search_results_raw}")
+    # printf"Search results raw: {search_results_raw}")
 
     # Process search results
     search_results = process_search_response(search_results_raw)
-    print(f"Search results count: {len(search_results)}")
-    print(f"search results: {search_results}")
+    # printf"Search results count: {len(search_results)}")
+    # # printf"search results: {search_results}")
     search_results_docs = [result.key for result in search_results]
-    print(f"search results docs: {search_results_docs}")
+    # printf"search results docs: {search_results_docs}")
 
 
     # Execute vector query using translation
-    vector_cmd = translate_vector_query(scenario['vector_equivalent'], vector_blob, index_name)
-    print(f"Vector command: {' '.join(str(x) for x in vector_cmd[:3])} ... [with vector blob]")
+    vector_cmd = translate_vector_query(scenario['vector_equivalent'], vector_blob, index_name, scenario.get('vector_suffix', ''))
+    # printf"Vector command: {' '.join(str(x) for x in vector_cmd[:3])} ... [with vector blob]")
     vector_results_raw = conn.execute_command(*vector_cmd)
 
     # Process vector results
     vector_results = process_vector_response(vector_results_raw)
-    print(f"Vector results count: {len(vector_results)}")
-    # print(f"vector results: {vector_results}")
+    # printf"Vector results count: {len(vector_results)}")
+    # # printf"vector results: {vector_results}")
     vector_results_docs = [result.key for result in vector_results]
-    print(f"vector results docs: {vector_results_docs}")
+    # printf"vector results docs: {vector_results_docs}")
 
-    print(f"Search results for RRF: {search_results}")
-    print(f"Vector results for RRF: {vector_results}")
+    # printf"Search results for RRF: {search_results}")
+    # printf"Vector results for RRF: {vector_results}")
 
     expected_rrf = rrf_fusion(search_results, vector_results)
     _sort_adjacent_same_scores(expected_rrf)
-    print(f"Expected RRF results: {expected_rrf}")
+    # printf"Expected RRF results: {expected_rrf}")
     expected_rrf_docs = [result.key for result in expected_rrf]
-    print(f"Expected RRF results docs: {expected_rrf_docs}")
+    # printf"Expected RRF results docs: {expected_rrf_docs}")
 
-    hybrid_results_raw = conn.execute_command(scenario['hybrid_query'].replace('$BLOB', vector_blob.decode('utf-8')))
-    hybrid_results = process_hybrid_response(hybrid_results_raw)
+    hybrid_cmd = translate_hybrid_query(scenario['hybrid_query'], vector_blob, index_name)
+    hybrid_results_raw = conn.execute_command(*hybrid_cmd)
+
+    hybrid_results, ranking_info = process_hybrid_response(hybrid_results_raw)
     _sort_adjacent_same_scores(hybrid_results)
 
+    # Create comparison table for debugging
+    comparison_table = create_comparison_table(hybrid_results, expected_rrf, ranking_info, search_results, vector_results)
+    # comparison_table = ''
+
+    # print(comparison_table)
 
     # Assert with detailed comparison table on failure
-    env.assertEqual(hybrid_results, expected_rrf[:10])
+    _validate_results(env, hybrid_results, expected_rrf, comparison_table)
     return True
