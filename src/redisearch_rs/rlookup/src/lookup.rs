@@ -244,7 +244,7 @@ pub struct Cursor<'list, 'a> {
     current: Option<NonNull<RLookupKey<'a>>>,
 }
 
-/// A cursor over a an [`RLookup`]s key list with editing operations.
+/// A cursor over an [`RLookup`]s key list with editing operations.
 pub struct CursorMut<'list, 'a> {
     _rlookup: &'list mut KeyList<'a>,
     current: Option<NonNull<RLookupKey<'a>>>,
