@@ -142,6 +142,7 @@ static ResultProcessor *getAdditionalMetricsRP(RedisSearchCtx* sctx, const Query
 
 static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipelineParams *params, const PLN_BaseStep *stp,
                                      QueryError *status, ResultProcessor *up, bool forceLoad, uint32_t *outStateFlags) {
+  RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:0 - initial pipeline->qctx.resultLimit = %u", pipeline->qctx.resultLimit);
   ResultProcessor *rp = NULL;
   PLN_ArrangeStep astp_s = {.base = {.type = PLN_T_ARRANGE}};
   PLN_ArrangeStep *astp = (PLN_ArrangeStep *)stp;
@@ -155,7 +156,11 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
 
   size_t maxResults = astp->offset + astp->limit;
   if (!maxResults) {
+    RedisModule_Log(NULL, "warning", "Nafraf: getArrangeRP:1 maxResults = DEFAULT_LIMIT");
     maxResults = DEFAULT_LIMIT;
+    // add default offset and limit
+    astp->offset = 0;
+    astp->limit = DEFAULT_LIMIT;
   }
 
   // TODO: unify if when req holds only maxResults according to the query type.
@@ -163,13 +168,17 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
   maxResults = MIN(maxResults, params->maxResultsLimit);
 
   if (IsCount(&params->common) || !maxResults) {
+    RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:0.1");
     rp = RPCounter_New();
     up = pushRP(&pipeline->qctx, rp, up);
     return up;
   }
 
+  // RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:0.2 params->common.optimizer->type = %s ", QOptimizer_PrintType(params->common.optimizer));
   if (IsHybrid(&params->common) || (params->common.optimizer->type != Q_OPT_NO_SORTER)) { // Don't optimize hybrid queries
+    RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1");
     if (astp->sortKeys) {
+      RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1.1");
       size_t nkeys = array_len(astp->sortKeys);
       astp->sortkeysLK = rm_malloc(sizeof(*astp->sortKeys) * nkeys);
 
@@ -205,6 +214,7 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
     } else if (IsHybrid(&params->common) ||
                IsSearch(&params->common) && !IsOptimized(&params->common) ||
                HasScorer(&params->common)) {
+      RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1.2");
       // No sort? then it must be sort by score, which is the default.
       // In optimize mode, add sorter for queries with a scorer.
       rp = RPSorter_NewByScore(maxResults);
@@ -213,12 +223,16 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
   }
 
   if (astp->offset || (astp->limit && !rp)) {
+    RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.1");
     rp = RPPager_New(astp->offset, astp->limit);
     up = pushRP(&pipeline->qctx, rp, up);
   } else if (IsSearch(&params->common) && IsOptimized(&params->common) && !rp) {
+    RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.2");
     rp = RPPager_New(0, maxResults);
     up = pushRP(&pipeline->qctx, rp, up);
   }
+
+  RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:3");
 
 end:
   array_free(loadKeys);
