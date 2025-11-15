@@ -347,6 +347,7 @@ static int populateReplyWithResults(RedisModule_Reply *reply,
 }
 
 long calc_results_len(AREQ *req, size_t limit) {
+  RedisModule_Log(NULL, "warning", "Nafraf: calc_results_len:0");
   long resultsLen;
   PLN_ArrangeStep *arng = AGPLN_GetArrangeStep(AREQ_AGGPlan(req));
   size_t reqLimit = arng && arng->isLimited ? arng->limit : DEFAULT_LIMIT;
@@ -938,12 +939,12 @@ static int buildRequest(RedisModuleCtx *ctx, RedisModuleString **argv, int argc,
 
   AREQ_AddRequestFlags(*r, QEXEC_FORMAT_DEFAULT);
 
+  (*r)->protocol = is_resp3(ctx) ? 3 : 2;
+
   if (AREQ_Compile(*r, argv + 2, argc - 2, status) != REDISMODULE_OK) {
     RS_LOG_ASSERT(QueryError_HasError(status), "Query has error");
     goto done;
   }
-
-  (*r)->protocol = is_resp3(ctx) ? 3 : 2;
 
   // Prepare the query.. this is where the context is applied.
   if (AREQ_RequestFlags(*r) & QEXEC_F_IS_CURSOR) {
