@@ -156,11 +156,17 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
 
   size_t maxResults = astp->offset + astp->limit;
   if (!maxResults) {
-    RedisModule_Log(NULL, "warning", "Nafraf: getArrangeRP:1 maxResults = DEFAULT_LIMIT");
-    maxResults = DEFAULT_LIMIT;
-    // add default offset and limit
-    astp->offset = 0;
-    astp->limit = DEFAULT_LIMIT;
+    if (IsAggregate(&params->common) && HasDepleter(&params->common)) {
+      RedisModule_Log(NULL, "warning", "Nafraf: getArrangeRP:0.1 maxResults = UINT32_MAX");
+      maxResults = UINT32_MAX;
+    } else {
+      RedisModule_Log(NULL, "warning", "Nafraf: getArrangeRP:0.2 maxResults = DEFAULT_LIMIT");
+      maxResults = DEFAULT_LIMIT;
+      // add default offset and limit
+      astp->offset = 0;
+      astp->limit = DEFAULT_LIMIT;
+    }
+
   }
 
   // TODO: unify if when req holds only maxResults according to the query type.
@@ -175,7 +181,29 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
   }
 
   // RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:0.2 params->common.optimizer->type = %s ", QOptimizer_PrintType(params->common.optimizer));
-  if (IsHybrid(&params->common) || (params->common.optimizer->type != Q_OPT_NO_SORTER)) { // Don't optimize hybrid queries
+  if (IsAggregate(&params->common) && HasDepleter(&params->common)) {
+      RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1.3 Add depleter");
+      // For aggregate queries with a depleter
+      // Set resultLimit based on the LIMIT clause if present, otherwise unlimited
+      if (astp->isLimited) {
+        RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1.3.1 Limited depleter");
+        // Respect the LIMIT: offset + limit
+        if (astp->limit > UINT64_MAX - astp->offset) {
+          pipeline->qctx.resultLimit = UINT32_MAX;
+        } else {
+          uint64_t sum = astp->offset + astp->limit;
+          pipeline->qctx.resultLimit = (sum > UINT32_MAX) ? UINT32_MAX : (uint32_t)sum;
+        }
+      } else {
+        // No LIMIT specified, consume everything
+        RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1.3.2 Unlimited depleter");
+        pipeline->qctx.resultLimit = UINT32_MAX;
+      }
+      // In non-optimized aggregate queries, we need to add a synchronous depleter
+      // Use RPDepleter_NewSync to run synchronously (no background thread)
+      rp = RPDepleter_NewSync(DepleterSync_New(1, false), params->common.sctx);
+      up = pushRP(&pipeline->qctx, rp, up);
+  } else if (IsHybrid(&params->common) || (params->common.optimizer->type != Q_OPT_NO_SORTER)) { // Don't optimize hybrid queries
     RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1");
     if (astp->sortKeys) {
       RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1.1");
@@ -212,7 +240,7 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
       rp = RPSorter_NewByFields(maxResults, sortkeys, nkeys, astp->sortAscMap);
       up = pushRP(&pipeline->qctx, rp, up);
     } else if (IsHybrid(&params->common) ||
-               IsSearch(&params->common) && !IsOptimized(&params->common) ||
+               (IsSearch(&params->common) && !IsOptimized(&params->common)) ||
                HasScorer(&params->common)) {
       RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1.2");
       // No sort? then it must be sort by score, which is the default.
@@ -230,6 +258,20 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
     RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.2");
     rp = RPPager_New(0, maxResults);
     up = pushRP(&pipeline->qctx, rp, up);
+  }
+
+  if (IsAggregate(&params->common) && HasDepleter(&params->common)) {
+    if (astp->isLimited) {
+      RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.3.1 Limited pager offset = %d, limit = %d", astp->offset, astp->limit);
+      if (astp->offset || (astp->limit)) {
+        rp = RPPager_New(astp->offset, astp->limit);
+        up = pushRP(&pipeline->qctx, rp, up);
+      }
+    // } else {
+    //   RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.3.2 Unlimited pager");
+    //   rp = RPPager_New(0, maxResults);
+    //   up = pushRP(&pipeline->qctx, rp, up);
+    }
   }
 
   RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:3");
@@ -628,7 +670,10 @@ int Pipeline_BuildAggregationPart(Pipeline *pipeline, const AggregationPipelineP
 
   // If no LIMIT or SORT has been applied, do it somewhere here so we don't
   // return the entire matching result set!
-  if (!hasArrange && (IsSearch(&params->common) || IsHybridSearchSubquery(&params->common))) {
+  RedisModule_Log(RSDummyContext, "warning", "Nafraf: Pipeline_BuildAggregationPart:2.0 hasArrange: %d", hasArrange);
+  if (!hasArrange &&
+        (IsSearch(&params->common) || IsHybridSearchSubquery(&params->common) ||
+        (IsAggregate(&params->common) && HasDepleter(&params->common)))) {
     rp = getArrangeRP(pipeline, params, NULL, status, rpUpstream, forceLoad, outStateFlags);
     if (!rp) {
       goto error;

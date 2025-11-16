@@ -298,6 +298,7 @@ static int handleCommonArgs(ParseAggPlanContext *papCtx, ArgsCursor *ac, QueryEr
       AC_Advance(ac);  // Advance without adding SortBy step to the plan
       *papCtx->reqflags |= QEXEC_F_NO_SORT;
     } else {
+      REQFLAGS_AddFlags(papCtx->reqflags, QEXEC_F_SORTBY);
       PLN_ArrangeStep *arng = AGPLN_GetOrCreateArrangeStep(papCtx->plan);
       if (parseSortby(arng, ac, status, papCtx) != REDISMODULE_OK) {
         return ARG_ERROR;
@@ -1069,6 +1070,40 @@ int AREQ_Compile(AREQ *req, RedisModuleString **argv, int argc, QueryError *stat
   if (IsInternal(req) && !req->querySlots) {
     QueryError_SetError(status, QUERY_ERROR_CODE_MISSING, "Internal query missing slots specification");
     goto error;
+  }
+
+  // FT.AGGREGATE backwards compatibility:
+  // Disable optimization if SORTBY is specified or timeout policy is strict
+  if (IsAggregate(req)) {
+    bool addDepleter = false;
+    bool hasSortBy = (AREQ_RequestFlags(req) & QEXEC_F_SORTBY);
+    PLN_ArrangeStep *arng = AGPLN_GetArrangeStep(AREQ_AGGPlan(req));
+    bool hasLimit = (arng != NULL && arng->isLimited);
+
+    if (req->reqConfig.timeoutPolicy == TimeoutPolicy_Fail) {
+      addDepleter = true;
+    }
+
+    if (req->protocol == 2) {
+      if (!IsOptimized(req) && !hasSortBy && !hasLimit) {
+        // FT.AGGREGATE idx '*' WITHCOUNT
+        addDepleter = true;
+      } else if (!IsOptimized(req) && !hasSortBy && hasLimit) {
+        // FT.AGGREGATE idx '*' WITHCOUNT LIMIT 0 0
+        // FT.AGGREGATE idx '*' WITHCOUNT LIMIT 0 10
+        addDepleter = true;
+      }
+    }
+
+    if(addDepleter) {
+      AREQ_AddRequestFlags(req, QEXEC_F_HAS_DEPLETER);
+    } else {
+      AREQ_RemoveRequestFlags(req, QEXEC_F_HAS_DEPLETER);
+    }
+    RedisModule_Log(RSDummyContext, "warning",
+      "Nafraf: IsOptimized: %d, hasSortBy: %d, hasLimit: %d, addDepleter: %d protocol: %d",
+      IsOptimized(req), hasSortBy, hasLimit, addDepleter, req->protocol);
+    RedisModule_Log(RSDummyContext, "warning", "Nafraf: hasDepleter: %d", addDepleter);
   }
 
   return REDISMODULE_OK;
