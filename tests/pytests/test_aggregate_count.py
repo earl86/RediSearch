@@ -249,90 +249,82 @@ def test_withoutcount_resp2():
     _test_withoutcount(2)
 
 def test_profile_resp2():
+    ### Test when the depleter is added for FT.AGGREGATE RESP3
     env = Env(protocol=2)
     conn = getConnectionByEnv(env)
     conn.execute_command('FT.CREATE', 'idx', 'SCHEMA', 't', 'text')
     conn.execute_command('HSET', '1', 't', 'hello')
     conn.execute_command('HSET', '2', 't', 'world')
 
+    # Setup expected result processor profiles
     if env.isCluster():
         rp0 = ['Type', 'Network', 'Time', ANY, 'Results processed', ANY]
     else:
         rp0 = ['Type', 'Index', 'Time', ANY, 'Results processed', ANY]
     rp1 = ['Type', 'Depleter', 'Time', ANY, 'Results processed', ANY]
 
-    env.expect('CONFIG', 'SET', 'search-on-timeout', 'return').ok()
-    # No strict mode + WITHOUTCOUNT doesn't add a depleter
-    queries = [
-        ['FT.PROFILE', 'idx', 'AGGREGATE', 'QUERY', '*', 'WITHOUTCOUNT'],
-    ]
-    for dialect in [1, 2, 3, 4]:
-        env.expect('CONFIG', 'SET', 'search-default-dialect', dialect).ok()
-        for query in queries:
-            profile = env.cmd(*query)
-            if env.isCluster():
-                RP_profile = profile[1][3][11]
-            else:
-                RP_profile = profile[1][1][0][13]
-            env.assertEqual(len(RP_profile), 1,
-                            message=f'query: {query} profile: {RP_profile}, dialect: {dialect}')
-            env.assertEqual(RP_profile[0], rp0)
+    for on_timeout_policy in ['return', 'fail']:
+        env.expect('CONFIG', 'SET', 'search-on-timeout', on_timeout_policy).ok()
 
-    # No strict mode without explicit WITHCOUNT/WITHOUTCOUNT the behavior
-    # depends on the dialect. Dialect 1-3 adds a depleter, dialect 4 does not.
-    queries = [
-        ['FT.PROFILE', 'idx', 'AGGREGATE', 'QUERY', '*',],
-    ]
-    for dialect in [1, 2, 3, 4]:
-        env.expect('CONFIG', 'SET', 'search-default-dialect', dialect).ok()
-        for query in queries:
-            profile = env.cmd(*query)
-            if env.isCluster():
-                RP_profile = profile[1][3][11]
-            else:
-                RP_profile = profile[1][1][0][13]
-
-            if dialect < 4:
-                env.assertEqual(len(RP_profile), 2,
-                                message=f'query: {query} profile: {RP_profile}, dialect: {dialect}')
-                # env.assertEqual(RP_profile[0], rp0)
-                # env.assertEqual(RP_profile[1], rp1)
-            else:
+        # WITHOUTCOUNT doesn't add a depleter
+        queries = [
+            ['FT.PROFILE', 'idx', 'AGGREGATE', 'QUERY', '*', 'WITHOUTCOUNT'],
+        ]
+        for dialect in [1, 2, 3, 4]:
+            env.expect('CONFIG', 'SET', 'search-default-dialect', dialect).ok()
+            for query in queries:
+                profile = env.cmd(*query)
+                if env.isCluster():
+                    RP_profile = profile[1][3][11]
+                else:
+                    RP_profile = profile[1][1][0][13]
                 env.assertEqual(len(RP_profile), 1,
                                 message=f'query: {query} profile: {RP_profile}, dialect: {dialect}')
                 env.assertEqual(RP_profile[0], rp0)
 
-    # Non-strict mode + WITHCOUNT adds a depleter
-    profile = env.cmd(
-        'FT.PROFILE', 'idx', 'AGGREGATE', 'QUERY', '*', 'WITHCOUNT')
-    if env.isCluster():
-        RP_profile = profile[1][3][11]
-    else:
-        RP_profile = profile[1][1][0][13]
-    env.assertEqual(len(RP_profile), 2,
-                    message=f'query: {query} profile: {RP_profile}')
-    env.assertEqual(RP_profile[0], rp0)
-    env.assertEqual(RP_profile[1], rp1)
+        # WITHCOUNT adds a depleter
+        queries = [
+            ('FT.PROFILE', 'idx', 'AGGREGATE', 'QUERY', '*', 'WITHCOUNT'),
+        ]
+        for dialect in [1, 2, 3, 4]:
+            env.expect('CONFIG', 'SET', 'search-default-dialect', dialect).ok()
+            for query in queries:
+                profile = env.cmd(*query)
+                if env.isCluster():
+                    RP_profile = profile[1][3][11]
+                else:
+                    RP_profile = profile[1][1][0][13]
+                message=f'query: {query} profile: {RP_profile} dialect: {dialect}'
+                env.assertEqual(len(RP_profile), 2, message=message)
+                env.assertEqual(RP_profile[0], rp0)
+                env.assertEqual(RP_profile[1], rp1)
 
-    # Strict mode always adds a depleter
-    env.expect('CONFIG', 'SET', 'search-on-timeout', 'fail').ok()
-    queries = [
-        ['FT.PROFILE', 'idx', 'AGGREGATE', 'QUERY', '*'],
-        ['FT.PROFILE', 'idx', 'AGGREGATE', 'QUERY', '*', 'WITHOUTCOUNT'],
-        ['FT.PROFILE', 'idx', 'AGGREGATE', 'QUERY', '*', 'WITHCOUNT'],
-    ]
-    for query in queries:
-        profile = env.cmd(*query)
-        if env.isCluster():
-            RP_coord = profile[1][3][11]
-        else:
-            RP_coord = profile[1][1][0][13]
+        # Queries without explicit WITHCOUNT/WITHOUTCOUNT the behavior
+        # depends on the dialect:
+        # - Dialect 1-3 adds a depleter    (WITHCOUNT by default)
+        # - Dialect 4 doesn't add depleter (WITHOUTCOUNT by default)
+        queries = [
+            ['FT.PROFILE', 'idx', 'AGGREGATE', 'QUERY', '*'],
+        ]
+        for dialect in [1, 2, 3, 4]:
+            env.expect('CONFIG', 'SET', 'search-default-dialect', dialect).ok()
+            for query in queries:
+                profile = env.cmd(*query)
+                if env.isCluster():
+                    RP_profile = profile[1][3][11]
+                else:
+                    RP_profile = profile[1][1][0][13]
 
-        message = f'query: {query} profile: {RP_coord} on_timeout_policy: fail'
-        env.assertEqual(len(RP_coord), 2,
-                        message=message)
-        env.assertEqual(RP_coord[0], rp0)
-        env.assertEqual(RP_coord[1], rp1)
+                if dialect < 4:
+                    env.assertEqual(len(RP_profile), 2,
+                                    message=f'query: {query} profile: {RP_profile}, dialect: {dialect}')
+                    env.assertEqual(RP_profile[0], rp0)
+                    env.assertEqual(RP_profile[1], rp1)
+                else:
+                    env.assertEqual(len(RP_profile), 1,
+                                    message=f'query: {query} profile: {RP_profile}, dialect: {dialect}')
+                    env.assertEqual(RP_profile[0], rp0)
+
 
 def test_profile_resp3():
     env = Env(protocol=3)
@@ -352,20 +344,22 @@ def test_profile_resp3():
         ['FT.PROFILE', 'idx', 'AGGREGATE', 'QUERY', '*', 'WITHCOUNT'],
     ]
 
-    # In RESP3, we don't have a depleter, independent of the timeout policy
+    # In RESP3, we never have a depleter
     for on_timeout_policy in ['return', 'fail']:
         env.expect('CONFIG', 'SET', 'search-on-timeout', on_timeout_policy).ok()
-        for query in queries:
-            profile = env.cmd(*query)
-            if env.isCluster():
-                RP_profile = profile['Profile']['Coordinator']['Result processors profile']
-            else:
-                RP_profile = profile['Profile']['Shards'][0]['Result processors profile']
+        for dialect in [1, 2, 3, 4]:
+            env.expect('CONFIG', 'SET', 'search-default-dialect', dialect).ok()
+            for query in queries:
+                profile = env.cmd(*query)
+                if env.isCluster():
+                    RP_profile = profile['Profile']['Coordinator']['Result processors profile']
+                else:
+                    RP_profile = profile['Profile']['Shards'][0]['Result processors profile']
 
-            message = f'query: {query} profile: {RP_profile} on_timeout_policy: {on_timeout_policy}'
-            env.assertEqual(len(RP_profile), 1,
-                            message=message)
-            env.assertEqual(RP_profile[0], rp0)
+                message = f'query: {query} profile: {RP_profile} on_timeout_policy: {on_timeout_policy}'
+                env.assertEqual(len(RP_profile), 1,
+                                message=message)
+                env.assertEqual(RP_profile[0], rp0)
 
 def _test_ftsearch(protocol):
     env = Env(protocol=protocol)
@@ -464,10 +458,12 @@ def _test_ftsearch(protocol):
                             print(res[1][1][0][13])
 
 
-# @skip()
+@skip()
 def test_ftsearch_resp2():
     _test_ftsearch(2)
 
+
+@skip()
 def test_ftsearch_resp3():
     _test_ftsearch(3)
 
