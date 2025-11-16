@@ -156,7 +156,7 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
 
   size_t maxResults = astp->offset + astp->limit;
   if (!maxResults) {
-    if (IsAggregate(&params->common) && HasDepleter(&params->common)) {
+    if (IsAggregate(&params->common) && (HasDepleter(&params->common) || IsCount(&params->common))) {
       RedisModule_Log(NULL, "warning", "Nafraf: getArrangeRP:0.1 maxResults = UINT32_MAX");
       maxResults = UINT32_MAX;
     } else {
@@ -250,7 +250,14 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
     }
   }
 
-  if (astp->offset || (astp->limit && !rp)) {
+  if (IsAggregate(&params->common) && HasDepleter(&params->common) && (astp->isLimited)) {
+    // FT.AGGREGATE + depleter + LIMIT
+    if (astp->offset || (astp->limit)) {
+      RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.3.1 Limited pager offset = %d, limit = %d", astp->offset, astp->limit);
+      rp = RPPager_New(astp->offset, astp->limit);
+      up = pushRP(&pipeline->qctx, rp, up);
+    }
+  } else if (astp->offset || (astp->limit && !rp)) {
     RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.1");
     rp = RPPager_New(astp->offset, astp->limit);
     up = pushRP(&pipeline->qctx, rp, up);
@@ -258,20 +265,6 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
     RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.2");
     rp = RPPager_New(0, maxResults);
     up = pushRP(&pipeline->qctx, rp, up);
-  }
-
-  if (IsAggregate(&params->common) && HasDepleter(&params->common)) {
-    if (astp->isLimited) {
-      RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.3.1 Limited pager offset = %d, limit = %d", astp->offset, astp->limit);
-      if (astp->offset || (astp->limit)) {
-        rp = RPPager_New(astp->offset, astp->limit);
-        up = pushRP(&pipeline->qctx, rp, up);
-      }
-    // } else {
-    //   RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.3.2 Unlimited pager");
-    //   rp = RPPager_New(0, maxResults);
-    //   up = pushRP(&pipeline->qctx, rp, up);
-    }
   }
 
   RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:3");

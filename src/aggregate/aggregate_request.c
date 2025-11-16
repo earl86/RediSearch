@@ -1080,10 +1080,6 @@ int AREQ_Compile(AREQ *req, RedisModuleString **argv, int argc, QueryError *stat
     PLN_ArrangeStep *arng = AGPLN_GetArrangeStep(AREQ_AGGPlan(req));
     bool hasLimit = (arng != NULL && arng->isLimited);
 
-    if (req->reqConfig.timeoutPolicy == TimeoutPolicy_Fail) {
-      addDepleter = true;
-    }
-
     if (req->protocol == 2) {
       if (!IsOptimized(req) && !hasSortBy && !hasLimit) {
         // FT.AGGREGATE idx '*' WITHCOUNT

@@ -333,13 +333,28 @@ void QOptimizer_Iterators(AREQ *req, QOptimizer *opt) {
 }
 
 void QOptimizer_UpdateTotalResults(AREQ *req) {
+    RedisModule_Log(NULL, "warning", "Nafraf: QOptimizer_UpdateTotalResults:0");
     PLN_ArrangeStep *arng = AGPLN_GetArrangeStep(AREQ_AGGPlan(req));
+    // FT.AGGREGATE + WITHCOUNT with explicit LIMIT > 0, cap totalResults to the
+    // LIMIT value (similar to optimized FT.SEARCH)
+    // For LIMIT 0 0, we want to return the full count (not cap to 0)
+    // For Implicit LIMIT (no LIMIT provided), we want to return the full count
+    if (IsAggregate(req) && !IsOptimized(req)) {
+      RedisModule_Log(NULL, "warning", "Nafraf: QOptimizer_UpdateTotalResults:1 arng = %p, isLimited = %d, limit = %lu, offset = %lu",
+        arng, arng ? arng->isLimited : 0, arng ? arng->limit : 0, arng ? arng->offset : 0);
+      if (!(arng && arng->isLimited && arng->limit > 0)) {
+        RedisModule_Log(NULL, "warning", "Nafraf: QOptimizer_UpdateTotalResults:1 Return");
+        return;
+      }
+    }
     size_t reqLimit = arng && arng->isLimited ? arng->limit : DEFAULT_LIMIT;
     size_t reqOffset = arng && arng->isLimited ? arng->offset : 0;
     QueryProcessingCtx *qctx = AREQ_QueryProcessingCtx(req);
     qctx->totalResults = qctx->totalResults > reqOffset ?
                               qctx->totalResults - reqOffset : 0;
+    RedisModule_Log(NULL, "warning", "Nafraf: QOptimizer_UpdateTotalResults:2 totalResults = %lu", qctx->totalResults);
     if(qctx->totalResults > reqLimit) {
+      RedisModule_Log(NULL, "warning", "Nafraf: QOptimizer_UpdateTotalResults:3 Capping from %lu to %lu", qctx->totalResults, reqLimit);
       qctx->totalResults = reqLimit;
     }
 }
