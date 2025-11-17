@@ -1072,34 +1072,15 @@ int AREQ_Compile(AREQ *req, RedisModuleString **argv, int argc, QueryError *stat
     goto error;
   }
 
-  // FT.AGGREGATE backwards compatibility:
-  // Disable optimization if SORTBY is specified or timeout policy is strict
+  // Define if we need a depleter in the pipeline
   if (IsAggregate(req)) {
-    bool addDepleter = false;
     bool hasSortBy = (AREQ_RequestFlags(req) & QEXEC_F_SORTBY);
-    PLN_ArrangeStep *arng = AGPLN_GetArrangeStep(AREQ_AGGPlan(req));
-    bool hasLimit = (arng != NULL && arng->isLimited);
-
     if (req->protocol == 2) {
-      if (!IsOptimized(req) && !hasSortBy && !hasLimit) {
-        // FT.AGGREGATE idx '*' WITHCOUNT
-        addDepleter = true;
-      } else if (!IsOptimized(req) && !hasSortBy && hasLimit) {
-        // FT.AGGREGATE idx '*' WITHCOUNT LIMIT 0 0
-        // FT.AGGREGATE idx '*' WITHCOUNT LIMIT 0 10
-        addDepleter = true;
+      if (!IsOptimized(req) && !hasSortBy) {
+        // FT.AGGREGATE idx '*' WITHCOUNT [LIMIT]
+        AREQ_AddRequestFlags(req, QEXEC_F_HAS_DEPLETER);
       }
     }
-
-    if(addDepleter) {
-      AREQ_AddRequestFlags(req, QEXEC_F_HAS_DEPLETER);
-    } else {
-      AREQ_RemoveRequestFlags(req, QEXEC_F_HAS_DEPLETER);
-    }
-    RedisModule_Log(RSDummyContext, "warning",
-      "Nafraf: IsOptimized: %d, hasSortBy: %d, hasLimit: %d, addDepleter: %d protocol: %d",
-      IsOptimized(req), hasSortBy, hasLimit, addDepleter, req->protocol);
-    RedisModule_Log(RSDummyContext, "warning", "Nafraf: hasDepleter: %d", addDepleter);
   }
 
   return REDISMODULE_OK;
