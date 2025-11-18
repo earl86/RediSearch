@@ -418,7 +418,8 @@ static void sendChunk_Resp2(AREQ *req, RedisModule_Reply *reply, size_t limit,
 
     if (IsOptimized(req) ||
         // FT.AGGREGATE + WITHCOUNT + [SORTBY] + [LIMIT]
-        (IsAggregate(req) && !IsOptimized(req) )) {
+        // delete?
+        (0 && IsAggregate(req) && !IsOptimized(req))) {
       QOptimizer_UpdateTotalResults(req);
     }
 
@@ -539,12 +540,6 @@ static void sendChunk_Resp3(AREQ *req, RedisModule_Reply *reply, size_t limit,
       Profile_PrepareMapForReply(reply);
     }
 
-    // if (IsOptimized(req) ||
-    //     // FT.AGGREGATE + WITHCOUNT + [SORTBY] + [LIMIT]
-    //     (IsAggregate(req) && !IsOptimized(req))) {
-    //   QOptimizer_UpdateTotalResults(req);
-    // }
-
     // <attributes>
     RedisModule_ReplyKV_Array(reply, "attributes");
     RedisModule_Reply_ArrayEnd(reply);
@@ -591,8 +586,9 @@ done_3:
     //   IsAggregate(req), IsOptimized(req), (AREQ_RequestFlags(req) & QEXEC_F_SORTBY));
 
     if (IsOptimized(req) ||
-        // FT.AGGREGATE + WITHCOUNT + [SORTBY] + [LIMIT]
-        (IsAggregate(req) && !IsOptimized(req))) {
+        // FT.AGGREGATE + WITHCOUNT + SORTBY + [LIMIT]
+        // (0 && IsAggregate(req) && !IsOptimized(req) && HasSortBy(req))) {
+          (0 && IsAggregate(req) && !IsOptimized(req))) {
       QOptimizer_UpdateTotalResults(req);
     }
 

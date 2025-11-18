@@ -346,6 +346,10 @@ void QOptimizer_UpdateTotalResults(AREQ *req) {
         RedisModule_Log(NULL, "warning", "Nafraf: QOptimizer_UpdateTotalResults:1 Return");
         return;
       }
+      // if (arng && arng->limit > 0) {
+      //   RedisModule_Log(NULL, "warning", "Nafraf: QOptimizer_UpdateTotalResults:1.1 Return");
+      //   return;
+      // }
     }
     size_t reqLimit = arng && arng->isLimited ? arng->limit : DEFAULT_LIMIT;
     size_t reqOffset = arng && arng->isLimited ? arng->offset : 0;
