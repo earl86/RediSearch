@@ -318,7 +318,7 @@ def testTagGCClearEmptyWithCursor(env):
     env.expect(debug_cmd(), 'DUMP_TAGIDX', 'idx', 't').equal([['foo', [1, 2]]])
 
     res, cursor = env.cmd('FT.AGGREGATE', 'idx', '@t:{foo}', 'WITHCURSOR', 'COUNT', '1')
-    env.assertEqual(res, [1, []])
+    env.assertEqual(res, [2, []])
 
     # delete both documents and run the GC to clean 'foo' inverted index
     env.expect('DEL', 'doc1').equal(1)

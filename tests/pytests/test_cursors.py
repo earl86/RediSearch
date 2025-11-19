@@ -180,7 +180,7 @@ def testNumericCursor(env):
         env.assertNotEqual(cursor, 0)
 
     res, cursor = env.cmd('FT.CURSOR', 'READ', idx, str(cursor))
-    env.assertEqual(res, [0])
+    env.assertEqual(res, [1000])
     env.assertEqual(cursor, 0)
 
 @skip(cluster=False)
@@ -609,13 +609,16 @@ def testCountArgValidation(env):
 
     # Query with lowercase `COUNT`
     res, cid = env.cmd('FT.CURSOR', 'READ', 'idx', str(cid), 'count', '2')
+    env.assertEqual(res[0], 5)
     env.assertEqual(len(res), 3)
 
     # Query with uppercase `COUNT`
     res, cid = env.cmd('FT.CURSOR', 'READ', 'idx', str(cid), 'COUNT', '2')
+    env.assertEqual(res[0], 5)
     env.assertEqual(len(res), 3)
 
     # Make sure cursor is depleted
     res, cid = env.cmd('FT.CURSOR', 'READ', 'idx', str(cid), 'COUNT', '2')
     env.assertEqual(cid, 0)
-    env.assertEqual(res, [0])
+    env.assertEqual(res[0], 5)
+    env.assertEqual(len(res), 1)

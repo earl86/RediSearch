@@ -30,6 +30,8 @@
 #include "module.h"
 #include "result_processor.h"
 #include "reply_empty.h"
+#include "count_total_results.h"
+#include "count_total_results.h"
 
 
 typedef enum {
@@ -429,7 +431,15 @@ static void sendChunk_Resp2(AREQ *req, RedisModule_Reply *reply, size_t limit,
 
     RedisModule_Reply_Array(reply);
 
-    RedisModule_Reply_LongLong(reply, qctx->totalResults);
+    // Use pre-calculated total for WITHCOUNT + WITHCURSOR queries
+    uint32_t totalToReport = qctx->totalResults;
+    if (req->cursor_has_precalculated_total) {
+      totalToReport = req->cursor_precalculated_total;
+      RedisModule_Log(RSDummyContext, "debug",
+                      "sendChunk_Resp2: Using pre-calculated total %u (current chunk: %u)",
+                      totalToReport, qctx->totalResults);
+    }
+    RedisModule_Reply_LongLong(reply, totalToReport);
     nelem++;
 
     // Once we get here, we want to return the results we got from the pipeline (with no error)
@@ -583,7 +593,15 @@ done_3:
     }
 
     // <total_results>
-    RedisModule_ReplyKV_LongLong(reply, "total_results", qctx->totalResults);
+    // Use pre-calculated total for WITHCOUNT + WITHCURSOR queries
+    uint32_t totalToReport = qctx->totalResults;
+    if (req->cursor_has_precalculated_total) {
+      totalToReport = req->cursor_precalculated_total;
+      RedisModule_Log(RSDummyContext, "debug",
+                      "sendChunk_Resp3: Using pre-calculated total %u (current chunk: %u)",
+                      totalToReport, qctx->totalResults);
+    }
+    RedisModule_ReplyKV_LongLong(reply, "total_results", totalToReport);
 
     // <error>
     RedisModule_ReplyKV_Array(reply, "warning"); // >warnings
@@ -1187,6 +1205,54 @@ int AREQ_StartCursor(AREQ *r, RedisModule_Reply *reply, StrongRef spec_ref, Quer
   }
   cursor->execState = r;
   r->cursor_id = cursor->id;
+
+  // Pre-calculate total for WITHCOUNT + WITHCURSOR
+  // This is needed because we can't use depleters with cursors (they would consume all results)
+  // Check conditions:
+  // 1. IsAggregate: This is an aggregate query
+  // 2. !IsOptimized: Not optimized (WITHCOUNT is implied, or WITHOUTCOUNT not specified)
+  // 3. IsCursor: This is a cursor query
+  //
+  // How it works:
+  // - In standalone mode and shards: Creates an independent counting pipeline with LIMIT 0 0
+  // - In cluster mode (coordinator): Executes a separate LIMIT 0 0 query to all shards before
+  //   creating the cursor (done in executePlan), and the total is stored in r->cursor_precalculated_total
+  //
+  // Note: Users can opt-out by passing WITHOUTCOUNT flag, which sets QEXEC_OPTIMIZE
+  // and skips this pre-calculation. In that case, total_results will show incremental counts.
+  if (IsAggregate(r) && !IsOptimized(r) && IsCursor(r)) {
+    if (!coord) {
+      // Shard or standalone mode: count local results
+      uint32_t total = countTotalResults(r);
+      cursor->precalculated_total = total;
+      cursor->has_precalculated_total = true;
+      r->cursor_precalculated_total = total;
+      r->cursor_has_precalculated_total = true;
+      RedisModule_Log(RSDummyContext, "notice",
+                      "AREQ_StartCursor (shard): Pre-calculated total = %u for cursor %llu",
+                      total, cursor->id);
+    } else if (r->cursor_has_precalculated_total) {
+      // Coordinator mode: use the total collected from all shards
+      cursor->precalculated_total = r->cursor_precalculated_total;
+      cursor->has_precalculated_total = true;
+      RedisModule_Log(RSDummyContext, "notice",
+                      "AREQ_StartCursor (coordinator): Using cluster-wide total = %u for cursor %llu",
+                      r->cursor_precalculated_total, cursor->id);
+    } else {
+      // Coordinator mode but total not available (shouldn't happen in normal flow)
+      cursor->has_precalculated_total = false;
+      cursor->precalculated_total = 0;
+      RedisModule_Log(RSDummyContext, "warning",
+                      "AREQ_StartCursor (coordinator): No precalculated total available for cursor %llu",
+                      cursor->id);
+    }
+  } else {
+    cursor->has_precalculated_total = false;
+    cursor->precalculated_total = 0;
+    r->cursor_has_precalculated_total = false;
+    r->cursor_precalculated_total = 0;
+  }
+
   runCursor(reply, cursor, 0);
   return REDISMODULE_OK;
 }

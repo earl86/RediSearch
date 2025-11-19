@@ -633,3 +633,17 @@ def test_ftsearch_resp2():
 def test_ftsearch_resp3():
     _test_ftsearch(3)
 
+
+def _test_00(protocol):
+    env = Env(protocol=protocol)
+    docs = 15
+    _setup_index_and_data(env, docs)
+    query = ['FT.AGGREGATE', 'idx', '*', 'WITHOUTCOUNT', 'SORTBY', 2, '@title', 'DESC', 'LOAD', 1, '@title']
+    res = env.cmd(*query)
+    print(res)
+
+def test00_resp2():
+    _test_00(2)
+
+def test00_resp3():
+    _test_00(3)
