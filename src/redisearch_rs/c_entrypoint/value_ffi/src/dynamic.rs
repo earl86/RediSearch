@@ -28,9 +28,12 @@ use value::{RsValue, RsValueInternal, Value, dynamic::DynRsValueRef, shared::Sha
 ///
 /// # Example
 /// ```
-/// use value_ffi::dynamic::{
-///     opaque::OpaqueDynRsValuePtr,
-///     DynRsValuePtr,
+/// use value_ffi::{
+///     apply_with_dyn_ptr,
+///     dynamic::{
+///         opaque::OpaqueDynRsValuePtr,
+///         DynRsValuePtr,
+///     }
 /// };
 /// use value::Value;
 /// use c_ffi_utils::opaque::IntoOpaque;
@@ -56,7 +59,7 @@ macro_rules! apply_with_dyn_ptr {
                     // from a `&RsValue`.
                     let v = unsafe { v.as_ref() };
                     // Safety: see previous statement
-                    let v = unsafe { expect_unchecked!(v, "`v` must not be null") };
+                    let v = unsafe { c_ffi_utils::expect_unchecked!(v, "`v` must not be null") };
                     f_exclusive(v)
                 }
                 DynRsValuePtr::Shared(v) => {
@@ -66,7 +69,7 @@ macro_rules! apply_with_dyn_ptr {
                     // the `SharedRsValue` and returns the `*const RsValueInternal`
                     // it wraps. Furthermore, the resulting `SharedRsValue`
                     // is forgotten rather than dropped below.
-                    let v = unsafe { SharedRsValue::from_raw(v) };
+                    let v = unsafe { value::shared::SharedRsValue::from_raw(v) };
                     let res = f_shared(&v);
                     // Forget v to avoid double free
                     std::mem::forget(v);

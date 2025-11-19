@@ -247,7 +247,7 @@ pub unsafe extern "C" fn RsValue_Number_Get(v: OpaqueDynRsValuePtr) -> f64 {
     unsafe { expect_unchecked!(n, "v must be of type 'Number'") }
 }
 
-/// Convert an [`OpaqueDynRsValue`] to a number type in-place.
+/// Convert an `RsValue` to a number type in-place.
 /// This clears the existing value and replaces it with the given value.
 ///
 /// # Safety
@@ -513,9 +513,7 @@ pub unsafe extern "C" fn RsValue_Map_Len(v: OpaqueDynRsValuePtr) -> u32 {
     }
 }
 
-/// Get an entry from a map value. Takes ownership
-/// of the key and value, and as such they need to be freed
-/// explicitly.
+/// Get an entry from a map value.
 ///
 /// # Safety
 /// - (1) `v` must originate from a call to [`RsValue_DynPtr`].
@@ -563,6 +561,126 @@ pub unsafe extern "C" fn RsValue_Map_GetEntry(
             // Safety: caller must ensure (5)
             unsafe { value.write(entry_value) };
         })
+    }
+}
+
+/// Get the left value of a trio value.
+///
+/// # Safety
+/// - (1) `v` must originate from a call to [`RsValue_DynPtr`].
+/// - (2) The `RsValue` `v` points to must be of type [`RsValueType::Trio`]
+///
+/// @param v A reference to the trio value to extract the left value from
+/// @return The left value of the trio
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn RsValue_Trio_GetLeft(v: OpaqueDynRsValuePtr) -> OpaqueDynRsValue {
+    // Safety: caller must ensure (1)
+    let v = unsafe { DynRsValuePtr::from_opaque(v) };
+
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
+    #[allow(unused_unsafe)]
+    // Safety: caller must ensure (1)
+    unsafe {
+        apply_with_dyn_ptr!(v, |v| {
+            // Safety: caller must ensure (2)
+            let trio = unsafe { expect_unchecked!(v.as_trio(), "Value is not a trio") };
+
+            let left = trio.left().clone();
+
+            DynRsValue::from(left).into_opaque()
+        })
+    }
+}
+
+/// Get the middle value of a trio value.
+///
+/// # Safety
+/// - (1) `v` must originate from a call to [`RsValue_DynPtr`].
+/// - (2) The `RsValue` `v` points to must be of type [`RsValueType::Trio`]
+///
+/// @param v A reference to the trio value to extract the middle value from
+/// @return The middle value of the trio
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn RsValue_Trio_GetMiddle(v: OpaqueDynRsValuePtr) -> OpaqueDynRsValue {
+    // Safety: caller must ensure (1)
+    let v = unsafe { DynRsValuePtr::from_opaque(v) };
+
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
+    #[allow(unused_unsafe)]
+    // Safety: caller must ensure (1)
+    unsafe {
+        apply_with_dyn_ptr!(v, |v| {
+            // Safety: caller must ensure (2)
+            let trio = unsafe { expect_unchecked!(v.as_trio(), "Value is not a trio") };
+
+            let middle = trio.middle().clone();
+
+            DynRsValue::from(middle).into_opaque()
+        })
+    }
+}
+
+/// Get the right value of a trio value.
+///
+/// # Safety
+/// - (1) `v` must originate from a call to [`RsValue_DynPtr`].
+/// - (2) The `RsValue` `v` points to must be of type [`RsValueType::Trio`]
+///
+/// @param v A reference to the trio value to extract the right value from
+/// @return The right value of the trio
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn RsValue_Trio_GetRight(v: OpaqueDynRsValuePtr) -> OpaqueDynRsValue {
+    // Safety: caller must ensure (1)
+    let v = unsafe { DynRsValuePtr::from_opaque(v) };
+
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
+    #[allow(unused_unsafe)]
+    // Safety: caller must ensure (1)
+    unsafe {
+        apply_with_dyn_ptr!(v, |v| {
+            // Safety: caller must ensure (2)
+            let trio = unsafe { expect_unchecked!(v.as_trio(), "Value is not a trio") };
+
+            let right = trio.right().clone();
+
+            DynRsValue::from(right).into_opaque()
+        })
+    }
+}
+
+/// Increment the reference count of an `RsValue`, ensuring
+/// it doesn't get freed until after `RsValue_DecrRef` is called.
+///
+/// # Safety
+/// - (1) `v` must originate from a call to [`RsValue_DynPtr`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn RsValue_IncrRef(v: OpaqueDynRsValuePtr) {
+    // Safety: caller must ensure (1)
+    let v = unsafe { DynRsValuePtr::from_opaque(v) };
+
+    // Safety: caller must ensure (1)
+    unsafe {
+        apply_with_dyn_ptr!(v, |v| {
+            let v = v.to_shared();
+            std::mem::forget(v);
+        })
+    }
+}
+
+/// Decrement the reference count of an `RsValue`.
+///
+/// # Safety
+/// - (1) `v` must originate from a call to [`RsValue_DynPtr`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn RsValue_DecrRef(v: OpaqueDynRsValuePtr) {
+    // Safety: caller must ensure (1)
+    let v = unsafe { DynRsValuePtr::from_opaque(v) };
+
+    match v {
+        // Safety: caller must ensure (1)
+        DynRsValuePtr::Exclusive(v) => drop(unsafe { v.read() }),
+        // Safety: caller must ensure (1)
+        DynRsValuePtr::Shared(v) => drop(unsafe { SharedRsValue::from_raw(v) }),
     }
 }
 
@@ -639,7 +757,7 @@ pub unsafe extern "C" fn RsValue_Replace(
 ///   or [`RsValue_NullStatic`].
 /// - (2) `v` must be non-null.
 ///
-/// @param v A pointer to the `RsValue` to convert to an `RsValueRef`
+/// @param v A pointer to the `RsValue` to convert to an `RsValuePtr`
 /// @return A reference to the `RsValue` v points to.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn RsValue_DynPtr(v: *mut OpaqueDynRsValue) -> OpaqueDynRsValuePtr {
@@ -648,6 +766,26 @@ pub unsafe extern "C" fn RsValue_DynPtr(v: *mut OpaqueDynRsValue) -> OpaqueDynRs
     // Safety: caller must ensure (2)
     let v = unsafe { expect_unchecked!(v, "`v` must not be NULL") };
     DynRsValuePtr::from_dyn_value(v).into_opaque()
+}
+
+/// Clear an `RsValue` in-place.
+/// This clears the existing value and replaces it with the given value.
+///
+/// # Safety
+/// - (1) `v` must be non-null;
+/// - (2) `v` must point to an `RsValue` originating from one of the constructors.
+///
+/// @param v The value to clear
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn RsValue_Clear(v: Option<NonNull<OpaqueDynRsValue>>) {
+    // Safety: caller must ensure (1)
+    let v = unsafe { expect_unchecked!(v) };
+    // Safety: caller must ensure (2)
+    let v = unsafe { DynRsValue::from_opaque_mut_ptr(v.as_ptr()) };
+    // Safety: caller must ensure (1). The previous statement casts the pointer
+    // to an `Option<&mut RsValue>`, which will be None if and only if `v` were null.
+    let v = unsafe { v.unwrap_unchecked() };
+    v.clear();
 }
 
 /// Free an RsValue.

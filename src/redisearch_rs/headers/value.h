@@ -303,7 +303,7 @@ bool RsValue_IsNull(struct RsValuePtr v);
 double RsValue_Number_Get(struct RsValuePtr v);
 
 /**
- * Convert an [`OpaqueDynRsValue`] to a number type in-place.
+ * Convert an `RsValue` to a number type in-place.
  * This clears the existing value and replaces it with the given value.
  *
  * # Safety
@@ -419,9 +419,7 @@ uint32_t RsValue_ArrayLen(struct RsValuePtr v);
 uint32_t RsValue_Map_Len(struct RsValuePtr v);
 
 /**
- * Get an entry from a map value. Takes ownership
- * of the key and value, and as such they need to be freed
- * explicitly.
+ * Get an entry from a map value.
  *
  * # Safety
  * - (1) `v` must originate from a call to [`RsValue_DynPtr`].
@@ -438,6 +436,59 @@ void RsValue_Map_GetEntry(struct RsValuePtr v,
                           uint32_t index,
                           struct RsValue *key,
                           struct RsValue *value);
+
+/**
+ * Get the left value of a trio value.
+ *
+ * # Safety
+ * - (1) `v` must originate from a call to [`RsValue_DynPtr`].
+ * - (2) The `RsValue` `v` points to must be of type [`RsValueType::Trio`]
+ *
+ * @param v A reference to the trio value to extract the left value from
+ * @return The left value of the trio
+ */
+struct RsValue RsValue_Trio_GetLeft(struct RsValuePtr v);
+
+/**
+ * Get the middle value of a trio value.
+ *
+ * # Safety
+ * - (1) `v` must originate from a call to [`RsValue_DynPtr`].
+ * - (2) The `RsValue` `v` points to must be of type [`RsValueType::Trio`]
+ *
+ * @param v A reference to the trio value to extract the middle value from
+ * @return The middle value of the trio
+ */
+struct RsValue RsValue_Trio_GetMiddle(struct RsValuePtr v);
+
+/**
+ * Get the right value of a trio value.
+ *
+ * # Safety
+ * - (1) `v` must originate from a call to [`RsValue_DynPtr`].
+ * - (2) The `RsValue` `v` points to must be of type [`RsValueType::Trio`]
+ *
+ * @param v A reference to the trio value to extract the right value from
+ * @return The right value of the trio
+ */
+struct RsValue RsValue_Trio_GetRight(struct RsValuePtr v);
+
+/**
+ * Increment the reference count of an `RsValue`, ensuring
+ * it doesn't get freed until after `RsValue_DecrRef` is called.
+ *
+ * # Safety
+ * - (1) `v` must originate from a call to [`RsValue_DynPtr`].
+ */
+void RsValue_IncrRef(struct RsValuePtr v);
+
+/**
+ * Decrement the reference count of an `RsValue`.
+ *
+ * # Safety
+ * - (1) `v` must originate from a call to [`RsValue_DynPtr`].
+ */
+void RsValue_DecrRef(struct RsValuePtr v);
 
 /**
  * Repeatedly dereference self until ending up at a non-reference value.
@@ -461,10 +512,22 @@ struct RsValuePtr RsValue_Dereference(struct RsValuePtr v);
  *   or [`RsValue_NullStatic`].
  * - (2) `v` must be non-null.
  *
- * @param v A pointer to the `RsValue` to convert to an `RsValueRef`
+ * @param v A pointer to the `RsValue` to convert to an `RsValuePtr`
  * @return A reference to the `RsValue` v points to.
  */
 struct RsValuePtr RsValue_DynPtr(struct RsValue *v);
+
+/**
+ * Clear an `RsValue` in-place.
+ * This clears the existing value and replaces it with the given value.
+ *
+ * # Safety
+ * - (1) `v` must be non-null;
+ * - (2) `v` must point to an `RsValue` originating from one of the constructors.
+ *
+ * @param v The value to clear
+ */
+void RsValue_Clear(struct RsValue *v);
 
 /**
  * Free an RsValue.
