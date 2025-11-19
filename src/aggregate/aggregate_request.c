@@ -1072,6 +1072,7 @@ int AREQ_Compile(AREQ *req, RedisModuleString **argv, int argc, QueryError *stat
     goto error;
   }
 
+  RedisModule_Log(RSDummyContext, "warning", "Nafraf: AREQ_Compile:1 IsCursor=%d IsInternal=%d protocol=%d", !!IsCursor(req), !!IsInternal(req), req->protocol);
   // Define if we need a depleter in the pipeline
   if (IsAggregate(req) && !IsOptimized(req) && !IsCount(req)) {
     PLN_ArrangeStep *arng = AGPLN_GetArrangeStep(AREQ_AGGPlan(req));
@@ -1091,7 +1092,13 @@ int AREQ_Compile(AREQ *req, RedisModuleString **argv, int argc, QueryError *stat
         AREQ_AddRequestFlags(req, QEXEC_F_HAS_DEPLETER);
       }
     }
+
+    // For FT.AGGREGATE with cursor, we can't use depleters.
+    if (IsCursor(req) && !IsInternal(req)) {
+      AREQ_RemoveRequestFlags(req, QEXEC_F_HAS_DEPLETER);
+    }
   }
+  RedisModule_Log(RSDummyContext, "warning", "Nafraf: AREQ_Compile:2 IsCursor=%d IsInternal=%d HasDepleter=%d", !!IsCursor(req), !!IsInternal(req), !!HasDepleter(req));
 
   return REDISMODULE_OK;
 

@@ -175,7 +175,7 @@ static bool AggregateRequiresPagerAtCoordinator(CommonPipelineParams *cpp, PLN_A
 
 static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipelineParams *params, const PLN_BaseStep *stp,
                                      QueryError *status, ResultProcessor *up, bool forceLoad, uint32_t *outStateFlags) {
-  RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:0 - initial pipeline->qctx.resultLimit = %u", pipeline->qctx.resultLimit);
+  RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:0 qctx.resultLimit=%u IsCursor=%d IsInternal=%d", pipeline->qctx.resultLimit, !!IsCursor(&params->common), !!IsInternal(&params->common));
   ResultProcessor *rp = NULL;
   PLN_ArrangeStep astp_s = {.base = {.type = PLN_T_ARRANGE}};
   PLN_ArrangeStep *astp = (PLN_ArrangeStep *)stp;
