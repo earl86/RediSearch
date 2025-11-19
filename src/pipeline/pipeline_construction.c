@@ -249,6 +249,7 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
         up = pushRP(&pipeline->qctx, rpLoader, up);
       }
       if (IsAggregate(&params->common) && HasDepleter(&params->common)) {
+        RedisModule_Log(RSDummyContext, "notice", "Nafraf: Depleter + Sorter created with %zu keys", nkeys);
         // pipeline->qctx.resultLimit = UINT32_MAX;
         // In non-optimized aggregate queries, we need to add a synchronous depleter
         rp = RPDepleter_NewSync(DepleterSync_New(1, false), params->common.sctx);
@@ -257,6 +258,7 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
         rp = RPSorter_NewByFields(UINT32_MAX, sortkeys, nkeys, astp->sortAscMap);
         up = pushRP(&pipeline->qctx, rp, up);
       } else {
+        RedisModule_Log(RSDummyContext, "notice", "Nafraf: Sorter created with %zu keys", nkeys);
         rp = RPSorter_NewByFields(maxResults, sortkeys, nkeys, astp->sortAscMap);
         up = pushRP(&pipeline->qctx, rp, up);
       }
@@ -273,22 +275,14 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
       // pipeline->qctx.resultLimit = UINT32_MAX;
       // In non-optimized aggregate queries, we need to add a synchronous depleter
       // Use RPDepleter_NewSync to run synchronously (no background thread)
+      RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1.3");
       rp = RPDepleter_NewSync(DepleterSync_New(1, false), params->common.sctx);
       up = pushRP(&pipeline->qctx, rp, up);
     }
   }
 
-  if (AggregateRequiresPagerAtCoordinator(&params->common, astp)) {
-      if (astp->offset || (astp->limit)) {
-        RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.3.1 Limited pager Coordinator offset = %d, limit = %d", astp->offset, astp->limit);
-        rp = RPPager_New(astp->offset, astp->limit);
-        up = pushRP(&pipeline->qctx, rp, up);
-      } else {
-        RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.3.2 Limited pager Coordinator limit = %d (DEFAULT_LIMIT)", DEFAULT_LIMIT);
-        rp = RPPager_New(0, DEFAULT_LIMIT);
-        up = pushRP(&pipeline->qctx, rp, up);
-      }
-  } else if (astp->offset || (astp->limit && !rp)) {
+  RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2 astp->offset = %d, astp->limit = %d, rp = %p", astp->offset, astp->limit, rp);
+  if (astp->offset || (astp->limit && !rp)) {
     RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.1");
     rp = RPPager_New(astp->offset, astp->limit);
     up = pushRP(&pipeline->qctx, rp, up);
@@ -296,6 +290,16 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
     RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.2");
     rp = RPPager_New(0, maxResults);
     up = pushRP(&pipeline->qctx, rp, up);
+  } else if (AggregateRequiresPagerAtCoordinator(&params->common, astp)) {
+    if (astp->offset || (astp->limit)) {
+      RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.3.1 Limited pager Coordinator offset = %d, limit = %d", astp->offset, astp->limit);
+      rp = RPPager_New(astp->offset, astp->limit);
+      up = pushRP(&pipeline->qctx, rp, up);
+    } else {
+      RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:2.3.2 Limited pager Coordinator limit = %d (DEFAULT_LIMIT)", DEFAULT_LIMIT);
+      rp = RPPager_New(0, DEFAULT_LIMIT);
+      up = pushRP(&pipeline->qctx, rp, up);
+    }
   }
 
   RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:3");

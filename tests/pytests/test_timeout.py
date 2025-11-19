@@ -46,9 +46,13 @@ def TestLimitWithCursor():
     timeout_res_count = num_docs // 4
     res, cursor = env.cmd('_ft.debug', 'FT.AGGREGATE', 'idx', '*', 'WITHCURSOR', 'COUNT', num_docs, 'LIMIT', 0, num_docs, 'TIMEOUT_AFTER_N', timeout_res_count, 'DEBUG_PARAMS_COUNT', 2)
     total_res = len(res["results"])
+    print('ft.aggregate: total_results ', res["total_results"])
+    print('ft.aggregate: len(results) ', len(res["results"]))
 
     while (cursor):
         res, cursor = env.cmd('FT.CURSOR', 'READ', 'idx', cursor)
         total_res += len(res["results"])
+        print('ft.cursor read: total_results ', res["total_results"])
+        print('ft.cursor read: len(results) ', len(res["results"]))
     # before the bug fix we got total_res = limit - cursor_reads
     env.assertEqual(total_res, num_docs, message="unexpected results count")
