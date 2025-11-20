@@ -157,6 +157,20 @@ static bool AggregateConsumeAll(CommonPipelineParams *cpp, PLN_ArrangeStep *astp
   return unlimited;
 }
 
+
+static bool PipelineRequiresSorter(AggregationPipelineParams *params) {
+  bool result = false;
+
+  // FT.AGGREGATE + WITHOUTCOUNT + SORTBY
+  bool AggregateWithoutCountSortby = (IsAggregate(&params->common) &&
+                 IsOptimized(&params->common) && HasSortBy(&params->common));
+
+  result = IsHybrid(&params->common) ||
+          (params->common.optimizer->type != Q_OPT_NO_SORTER) ||
+          AggregateWithoutCountSortby;
+  return result;
+}
+
 static bool AggregateRequiresPagerAtCoordinator(CommonPipelineParams *cpp, PLN_ArrangeStep *astp) {
   bool addPager = false;
   if (IsAggregate(cpp) && !IsInternal(cpp)) {
@@ -214,7 +228,7 @@ static ResultProcessor *getArrangeRP(Pipeline *pipeline, const AggregationPipeli
     return up;
   }
 
-  if (IsHybrid(&params->common) || (params->common.optimizer->type != Q_OPT_NO_SORTER)) { // Don't optimize hybrid queries
+  if (PipelineRequiresSorter(params)) {
     RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1");
     if (astp->sortKeys) {
       RedisModule_Log(RSDummyContext, "warning", "Nafraf: getArrangeRP:1.1");
