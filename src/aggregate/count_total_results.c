@@ -38,13 +38,8 @@ uint32_t countTotalResults(AREQ *req) {
   Pipeline counting_pipeline = {0};
   QueryIterator *counting_rootiter = NULL;
 
-  RedisModule_Log(RSDummyContext, "notice",
-                  "countTotalResults: Starting pre-calculation for cursor");
-
   // Check if AST root is valid
   if (!req->ast.root) {
-    RedisModule_Log(RSDummyContext, "warning",
-                    "countTotalResults: AST root is NULL, cannot count");
     goto cleanup;
   }
 
@@ -66,15 +61,10 @@ uint32_t countTotalResults(AREQ *req) {
   req->ast.metricRequests = saved_metricRequests;
 
   if (!counting_rootiter || QueryError_HasError(&status)) {
-    RedisModule_Log(RSDummyContext, "warning",
-                    "countTotalResults: Failed to create counting iterator: %s",
-                    QueryError_GetUserError(&status));
     goto cleanup;
   }
 
   // Step 2: Initialize the counting pipeline
-  RedisModule_Log(RSDummyContext, "notice",
-                  "countTotalResults: Initializing counting pipeline");
   Pipeline_Initialize(&counting_pipeline, req->reqConfig.timeoutPolicy, &status);
   counting_pipeline.qctx.resultLimit = UINT32_MAX;  // No limit for counting
 
@@ -84,8 +74,6 @@ uint32_t countTotalResults(AREQ *req) {
 
   // Step 4: Build the query part with the fresh iterator
   // This creates the RPQueryIterator and any scorers/filters from the query
-  RedisModule_Log(RSDummyContext, "notice",
-                  "countTotalResults: Building query part");
   QueryPipelineParams query_params = {
     .common = {
       .sctx = req->sctx,
@@ -105,21 +93,13 @@ uint32_t countTotalResults(AREQ *req) {
   Pipeline_BuildQueryPart(&counting_pipeline, &query_params);
   counting_rootiter = NULL;  // Ownership transferred to pipeline
 
-  RedisModule_Log(RSDummyContext, "notice",
-                  "countTotalResults: Query part built successfully");
-
   if (QueryError_HasError(&status)) {
-    RedisModule_Log(RSDummyContext, "warning",
-                    "countTotalResults: Failed to build query part: %s",
-                    QueryError_GetUserError(&status));
     goto cleanup;
   }
 
   // Step 5: Manually add RPCounter to the pipeline
   // We don't use Pipeline_BuildAggregationPart because it has complex logic
   // that can cause infinite loops. We just need a simple counter.
-  RedisModule_Log(RSDummyContext, "notice",
-                  "countTotalResults: Adding RPCounter to pipeline");
   ResultProcessor *counter = RPCounter_New();
   counter->upstream = counting_pipeline.qctx.endProc;
   counter->parent = &counting_pipeline.qctx;
@@ -128,36 +108,23 @@ uint32_t countTotalResults(AREQ *req) {
   // Step 6: Execute the counting pipeline
   ResultProcessor *rp = counting_pipeline.qctx.endProc;
   if (!rp) {
-    RedisModule_Log(RSDummyContext, "warning",
-                    "countTotalResults: No end processor in counting pipeline");
     goto cleanup;
   }
-
-  RedisModule_Log(RSDummyContext, "notice",
-                  "countTotalResults: Executing counting pipeline (calling Next)");
 
   // Call Next() once - RPCounter will internally loop through all upstream results
   // and return EOF immediately after counting them all
   SearchResult r = {0};
   int rc = rp->Next(rp, &r);
 
-  RedisModule_Log(RSDummyContext, "notice",
-                  "countTotalResults: Next() returned rc=%d", rc);
-
   SearchResult_Destroy(&r);
 
   if (rc != RS_RESULT_EOF) {
-    RedisModule_Log(RSDummyContext, "warning",
-                    "countTotalResults: Pipeline execution failed with rc=%d", rc);
     goto cleanup;
   }
 
   // The totalResults field will be populated by the root processor (RPQueryIterator)
   // as RPCounter pulls results from upstream
   totalCount = counting_pipeline.qctx.totalResults;
-
-  RedisModule_Log(RSDummyContext, "notice",
-                  "countTotalResults: Successfully counted %u total results", totalCount);
 
 cleanup:
   // Clean up the counting pipeline (this frees all result processors)

@@ -420,9 +420,6 @@ static uint32_t executeCountingQuery(RedisModuleString **argv, int argc, IndexSp
   int rc = prepareForExecution(countReq, ctx, countArgv, countArgc, sp, &knnCtx, &countStatus);
 
   if (rc != REDISMODULE_OK) {
-    RedisModule_Log(RSDummyContext, "warning",
-                    "executeCountingQuery: Failed to prepare: %s",
-                    QueryError_GetUserError(&countStatus));
     AREQ_Free(countReq);
     QueryError_ClearError(&countStatus);
     if (knnCtx) rm_free(knnCtx);
@@ -436,18 +433,12 @@ static uint32_t executeCountingQuery(RedisModuleString **argv, int argc, IndexSp
   counter->parent = qctx;
   qctx->endProc = counter;
 
-  RedisModule_Log(RSDummyContext, "notice",
-                  "executeCountingQuery: Added RPCounter, calling Next()");
-
   // Call Next() once - RPCounter will internally loop through all upstream results
   // and return EOF immediately after counting them all
   SearchResult r = {0};
   int result_rc = counter->Next(counter, &r);
 
   uint32_t total = qctx->totalResults;
-
-  RedisModule_Log(RSDummyContext, "notice",
-                  "executeCountingQuery: Next() returned rc=%d, totalResults=%u", result_rc, total);
 
   SearchResult_Destroy(&r);
   AREQ_Free(countReq);
@@ -479,8 +470,8 @@ static int executePlan(AREQ *r, RedisModuleCtx *ctx, RedisModuleString **argv, i
     // Keep the original concurrent context
     ConcurrentCmdCtx_KeepRedisCtx(cmdCtx);
 
-    // Pre-calculate total for WITHCOUNT + WITHCURSOR in cluster mode
-    if (IsAggregate(r) && !IsOptimized(r)) {
+    // Pre-calculate total for FT.AGGREGATE + WITHCOUNT + WITHCURSOR in cluster
+    if (IsAggregate(r) && !IsOptimized(r) && IsCursor(r)) {
       uint32_t total = executeCountingQuery(argv, argc, sp, ctx);
       r->cursor_precalculated_total = total;
       r->cursor_has_precalculated_total = true;
